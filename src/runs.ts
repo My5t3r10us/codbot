@@ -11,6 +11,7 @@ import type { GitStrategy, Project, Run, RunMode, RunState, StatusEvent } from "
 import * as gh from "./gh";
 import * as git from "./git";
 import * as lock from "./lock";
+import { redact } from "./redact";
 import { ACTIVE_STATES, buildBrief, coveredTasks, fillBrief, strategyRule } from "./rules";
 import type { StrategyChoice, Usage } from "./rules";
 
@@ -77,7 +78,7 @@ async function notify(title: string, body: string) {
 }
 
 async function log(runId: string, type: string, text: string) {
-  await db.addRunEvent(runId, type, text);
+  await db.addRunEvent(runId, type, redact(text));
   changed();
 }
 
@@ -122,7 +123,7 @@ async function applySuggestion(s: Suggestion) {
       await log(s.runId, "status", `ClickUp : « ${s.taskName} » → ${s.status}`);
     }
     if (s.comment) {
-      await cu.addComment(s.taskId, s.comment);
+      await cu.addComment(s.taskId, redact(s.comment));
       await log(s.runId, "status", `ClickUp : commentaire ajouté sur « ${s.taskName} »`);
     }
   } catch (e) {
@@ -375,7 +376,7 @@ async function deliverBranch(run: Run, commits: git.Commit[], covered: string[])
     const tasksMd = run.task_ids.map((id, i) => `- [${run.task_names[i]}](https://app.clickup.com/t/${id}) (CU-${id})`);
     const body = ["Tâches ClickUp :", ...tasksMd, "", "Résumé de l'agent :", "", run.summary ?? "", "", "_PR ouverte par Codbot._"].join("\n");
     try {
-      prUrl = await gh.createPr(run.repo_path, { base: run.base_branch, head: run.branch!, title, body });
+      prUrl = await gh.createPr(run.repo_path, { base: run.base_branch, head: run.branch!, title: redact(title), body: redact(body) });
       await log(run.id, "git", `PR ouverte : ${prUrl}`);
     } catch (e) {
       // Remote hors GitHub ou gh indisponible : le merge sera détecté via git.
