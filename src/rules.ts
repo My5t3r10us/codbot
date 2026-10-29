@@ -145,3 +145,20 @@ export function usageFrom(msg: Record<string, any>, now = Date.now()): Usage | n
   }));
   return windows.length ? { windows, at: now } : null;
 }
+
+// ---------- filtre d'échéance (vue Tâches) ----------
+
+export type DueFilter = "all" | "overdue" | "today" | "week" | "none";
+
+/** `due` : échéance ClickUp en millisecondes (chaîne), ou null. */
+export function matchesDue(due: string | null, filter: DueFilter, now = new Date()) {
+  if (filter === "all") return true;
+  if (filter === "none") return !due;
+  if (!due) return false;
+  const at = Number(due);
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = 24 * 3600 * 1000;
+  if (filter === "overdue") return at < now.getTime();
+  if (filter === "today") return at >= startOfDay && at < startOfDay + day;
+  return at >= startOfDay && at < startOfDay + 7 * day;
+}

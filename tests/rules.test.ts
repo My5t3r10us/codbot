@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CuTask } from "../src/clickup";
-import { BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief, coveredTasks, fillBrief, rateLimitFrom, repoAllows, strategyRule, usageFrom } from "../src/rules";
+import { BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief, coveredTasks, fillBrief, matchesDue, rateLimitFrom, repoAllows, strategyRule, usageFrom } from "../src/rules";
 
 const task = (id: string, extra: Partial<CuTask> = {}): CuTask => ({
   id,
@@ -125,5 +125,22 @@ describe("usageFrom", () => {
   });
   it("ignore les autres messages", () => {
     expect(usageFrom({ type: "result" })).toBeNull();
+  });
+});
+
+describe("matchesDue", () => {
+  const now = new Date(2026, 9, 29, 15, 0); // 29 octobre 2026, 15 h
+  const at = (d: number, h = 12) => String(new Date(2026, 9, d, h).getTime());
+  it("trie en retard, aujourd'hui, cette semaine, sans échéance", () => {
+    expect(matchesDue(at(29, 10), "overdue", now)).toBe(true);
+    expect(matchesDue(at(29, 18), "overdue", now)).toBe(false);
+    expect(matchesDue(at(29, 18), "today", now)).toBe(true);
+    expect(matchesDue(at(30), "today", now)).toBe(false);
+    expect(matchesDue(at(30), "week", now)).toBe(true);
+    expect(matchesDue(String(new Date(2026, 10, 6).getTime()), "week", now)).toBe(false);
+    expect(matchesDue(null, "none", now)).toBe(true);
+    expect(matchesDue(at(30), "none", now)).toBe(false);
+    expect(matchesDue(null, "today", now)).toBe(false);
+    expect(matchesDue(null, "all", now)).toBe(true);
   });
 });

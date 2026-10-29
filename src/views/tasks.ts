@@ -1,4 +1,5 @@
-// Vue des tâches : tâches des listes associées à un repo, sélection multiple et lancement d'agents.
+// Vue des tâches : listes associées à un repo (ou parcourues dans l'espace de travail),
+// filtres, sélection multiple et lancement d'agents. Rafraîchie toutes les 60 s.
 import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as cu from "../clickup";
@@ -6,9 +7,22 @@ import * as db from "../db";
 import { errorBox, h } from "../dom";
 import * as lock from "../lock";
 import * as queue from "../queue";
+import { matchesDue } from "../rules";
+import type { DueFilter } from "../rules";
 import * as runs from "../runs";
 
-const filters = { listId: "", search: "", mine: false, closed: false, withSubtasks: true };
+const REFRESH_MS = 60_000;
+const filters = {
+  listId: "",
+  /** Nom d'une liste parcourue qui n'est associée à aucun repo. */
+  browsedName: "",
+  search: "",
+  mine: false,
+  closed: false,
+  withSubtasks: true,
+  due: "all" as DueFilter,
+};
+let refreshTimer: number | undefined;
 const selected = new Set<string>();
 let me: cu.CuUser | null = null;
 let myTag = "";
@@ -16,13 +30,23 @@ let myTag = "";
 export async function renderTasks(root: HTMLElement, goToRun: (id: string) => void) {
   // Un projet importé d'un autre PC n'est utilisable qu'une fois son repo local renseigné.
   const projects = (await db.listProjects()).filter((p) => p.repo_path);
-  if (!projects.length) {
+  const rerender = () => renderTasks(root, goToRun);
+  if (!projects.some((p) => p.list_id === filters.listId) && !filters.browsedName) filters.listId = projects[0]?.list_id ?? "";
+  const browse = browsePanel((id, name) => {
+    filters.listId = id;
+    filters.browsedName = projects.some((p) => p.list_id === id) ? "" : name;
+    selected.clear();
+    void rerender();
+  });
+  if (!filters.listId) {
     root.replaceChildren(h("section", { class: "card" },
-      h("p", {}, "Aucun projet configuré. Va dans Réglages pour associer une liste ClickUp à un repo.")));
+      h("p", {}, "Aucun projet configuré : associe une liste ClickUp à un repo dans les Réglages, ou parcours ton espace de travail."),
+      browse));
     return;
   }
-  if (!projects.some((p) => p.list_id === filters.listId)) filters.listId = projects[0].list_id;
-  const project = projects.find((p) => p.list_id === filters.listId)!;
+  /** Liste affichée sans repo associé : on peut la consulter, pas y lancer d'agent. */
+  const project = projects.find((p) => p.list_id === filters.listId) ?? null;
+  const listName = project?.list_name ?? filters.browsedName;
 
   const body = h("div", {}, h("p", { class: "muted" }, "Chargement des tâches…"));
   const bar = h("div", { class: "row" });
@@ -31,10 +55,19 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
     h("select", {
       onchange: (e: Event) => {
         filters.listId = (e.target as HTMLSelectElement).value;
+        filters.browsedName = "";
         selected.clear();
-        void renderTasks(root, goToRun);
+        void rerender();
       },
-    }, ...projects.map((p) => h("option", { value: p.list_id, selected: p.list_id === filters.listId }, p.list_name))),
+    },
+      ...projects.map((p) => h("option", { value: p.list_id, selected: p.list_id === filters.listId }, p.list_name)),
+      project ? "" : h("option", { value: filters.listId, selected: true }, `${listName} (sans repo)`)),
+    h("button", { class: "ghost", onclick: () => browse.toggleAttribute("hidden") }, "Parcourir…"),
+    h("select", {
+      onchange: (e: Event) => { filters.due = (e.target as HTMLSelectElement).value as DueFilter; void fill(); },
+    },
+      ...([["all", "Toutes échéances"], ["overdue", "En retard"], ["today", "Aujourd'hui"], ["week", "7 prochains jours"], ["none", "Sans échéance"]] as const)
+        .map(([v, label]) => h("option", { value: v, selected: filters.due === v }, label))),
     h("input", {
       placeholder: "Rechercher…",
       value: filters.search,
@@ -51,16 +84,30 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
       "Cocher une tâche coche ses sous-tâches"),
     h("button", { class: "ghost", onclick: () => { tasks = null; void fill(); } }, "Rafraîchir"),
   );
+  browse.hidden = true;
   root.replaceChildren(h("section", { class: "card" },
-    h("div", { class: "row spread" }, h("h2", {}, project.list_name), h("span", { class: "muted small" }, project.repo_path)),
-    toolbar, bar, dialog, body));
+    h("div", { class: "row spread" },
+      h("h2", {}, listName),
+      project
+        ? h("span", { class: "muted small" }, project.repo_path)
+        : h("span", { class: "warn small" }, "Liste sans repo : associe-la dans les Réglages pour y lancer des agents")),
+    toolbar, browse, bar, dialog, body));
+
+  // Rafraîchissement périodique, suspendu fenêtre cachée ou fenêtre de lancement ouverte.
+  window.clearInterval(refreshTimer);
+  refreshTimer = window.setInterval(() => {
+    if (!body.isConnected) return window.clearInterval(refreshTimer);
+    if (document.hidden || dialog.childElementCount) return;
+    tasks = null;
+    void fill();
+  }, REFRESH_MS);
 
   let tasks: cu.CuTask[] | null = null;
   async function fill() {
     try {
       me ??= await cu.getUser();
       myTag = await lock.myLockTag();
-      tasks ??= await cu.getListTasks(project.list_id, filters.closed);
+      tasks ??= await cu.getListTasks(filters.listId, filters.closed);
       const open = (await db.listRuns()).filter((r) => runs.ACTIVE_STATES.includes(r.state) || ["blocked", "in_review"].includes(r.state));
       body.replaceChildren(table(tasks, open));
       renderBar();
@@ -71,16 +118,20 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
 
   function renderBar() {
     const chosen = (tasks ?? []).filter((t) => selected.has(t.id));
+    if (!project) {
+      bar.replaceChildren(h("span", { class: "muted small" }, "Consultation seule : cette liste n'est associée à aucun repo."));
+      return;
+    }
     bar.replaceChildren(
       chosen.length
         ? h("span", {}, `${chosen.length} tâche(s) sélectionnée(s)`)
         : h("span", { class: "muted small" }, "Coche une ou plusieurs tâches pour leur assigner un agent."),
-      chosen.length ? h("button", { onclick: () => void openDialog(chosen) }, "Assigner un agent") : "",
+      chosen.length ? h("button", { onclick: () => void openDialog(project, chosen) }, "Assigner un agent") : "",
       chosen.length ? h("button", { class: "ghost", onclick: () => { selected.clear(); dialog.replaceChildren(); void fill(); } }, "Tout décocher") : "",
     );
   }
 
-  async function openDialog(chosen: cu.CuTask[]) {
+  async function openDialog(project: db.Project, chosen: cu.CuTask[]) {
     let mode: db.RunMode = chosen.length > 1 ? "groupe" : "separe";
     let strategy: db.GitStrategy = "branche";
     let statusMode = await db.getSetting<db.StatusMode>("status_mode", "auto");
@@ -170,7 +221,8 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
     const q = filters.search.toLowerCase();
     const visible = all.filter((t) =>
       (!q || t.name.toLowerCase().includes(q) || t.id.includes(q)) &&
-      (!filters.mine || t.assignees.some((a) => a.id === me?.id)));
+      (!filters.mine || t.assignees.some((a) => a.id === me?.id)) &&
+      matchesDue(t.due_date, filters.due));
     const ids = new Set(visible.map((t) => t.id));
     // Les sous-tâches s'affichent sous leur parente quand celle-ci est visible.
     const roots = visible.filter((t) => !t.parent || !ids.has(t.parent));
@@ -185,7 +237,7 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
       const box = h("input", {
         type: "checkbox",
         checked: selected.has(t.id),
-        disabled: Boolean(run || otherPc),
+        disabled: Boolean(run || otherPc || !project),
         onchange: (e: Event) => {
           const on = (e.target as HTMLInputElement).checked;
           const targets = [t, ...(filters.withSubtasks ? all.filter((c) => c.parent === t.id) : [])];
@@ -230,4 +282,32 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
   }
 
   await fill();
+}
+
+/** Parcours espace → dossier → liste de l'espace de travail ClickUp. */
+function browsePanel(onPick: (listId: string, name: string) => void) {
+  const spaceSel = h("select", {}, h("option", { value: "" }, "Espace…")) as HTMLSelectElement;
+  const listSel = h("select", { disabled: true }, h("option", { value: "" }, "Liste…")) as HTMLSelectElement;
+  const panel = h("div", { class: "row" }, spaceSel, listSel);
+  void (async () => {
+    try {
+      const teamId = await db.getSetting<string>("team_id", "");
+      for (const sp of await cu.getSpaces(teamId)) spaceSel.append(h("option", { value: sp.id }, sp.name));
+    } catch (e) {
+      panel.append(errorBox(e));
+    }
+  })();
+  spaceSel.onchange = async () => {
+    listSel.replaceChildren(h("option", { value: "" }, "Liste…"));
+    listSel.disabled = true;
+    if (!spaceSel.value) return;
+    const [folders, lists] = await Promise.all([cu.getFolders(spaceSel.value), cu.getFolderlessLists(spaceSel.value)]);
+    for (const l of lists) listSel.append(h("option", { value: l.id }, l.name));
+    for (const f of folders) listSel.append(h("optgroup", { label: f.name }, ...f.lists.map((l) => h("option", { value: l.id }, l.name))));
+    listSel.disabled = false;
+  };
+  listSel.onchange = () => {
+    if (listSel.value) onPick(listSel.value, listSel.selectedOptions[0].textContent ?? listSel.value);
+  };
+  return panel;
 }
