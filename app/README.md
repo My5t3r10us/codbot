@@ -101,5 +101,18 @@ Le serveur Vite écoute sur le port 1430 (le prototype M0 garde le 1420).
   `src-tauri\target\release\bundle\nsis\Codbot_<version>_x64-setup.exe` (installation pour
   l'utilisateur courant, sans droits admin).
 
-Pas encore fait : **mises à jour automatiques** (plugin `updater`). Il faut d'abord décider où
-héberger les mises à jour et générer la clé de signature (voir SPEC, questions ouvertes).
+## Mises à jour automatiques
+
+- L'app lit `https://github.com/My5t3r10us/codbot/releases/latest/download/latest.json` au
+  démarrage (« Réglages ⬆ » si une version est disponible) et depuis la carte « Version et mises à
+  jour ». Le paquet est vérifié avec la clé publique de `tauri.conf.json` avant installation.
+- Publier une version :
+  1. incrémenter `version` dans `src-tauri/tauri.conf.json` ;
+  2. lancer, avec la clé de signature fournie par Infisical (`TAURI_SIGNING_PRIVATE_KEY`,
+     `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` vide) :
+
+     ```bash
+     infisical run --env=dev -- npm run release -- --notes "Ce qui change"
+     ```
+
+  Le script construit l'installeur signé, écrit `latest.json` et crée la release `v<version>`.

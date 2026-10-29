@@ -2,6 +2,8 @@
 //
 //   infisical run --env=dev -- npm run release -- --notes "Ce qui change"
 //
+// `--skip-build` republie les fichiers déjà construits (après un échec de `gh`, par exemple).
+//
 // Prérequis : version incrémentée dans src-tauri/tauri.conf.json, `gh` connecté, et la clé de
 // signature dans l'environnement (TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD).
 import { spawnSync } from "node:child_process";
@@ -26,9 +28,11 @@ function fail(msg) {
   process.exit(1);
 }
 
-function run(cmd, cmdArgs) {
+// Le shell n'est utilisé que pour npm (npm.cmd sous Windows) : avec lui, les arguments contenant
+// des espaces (titre, notes) seraient découpés.
+function run(cmd, cmdArgs, { shell = false } = {}) {
   console.log(`\n> ${cmd} ${cmdArgs.join(" ")}`);
-  const r = spawnSync(cmd, cmdArgs, { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+  const r = spawnSync(cmd, cmdArgs, { cwd: root, stdio: "inherit", shell: shell && process.platform === "win32" });
   if (r.status !== 0) fail(`${cmd} a échoué (code ${r.status})`);
 }
 
@@ -38,7 +42,7 @@ if (spawnSync("gh", ["release", "view", `v${version}`, "--repo", repo], { stdio:
   fail(`La release v${version} existe déjà sur ${repo} : incrémente la version dans tauri.conf.json.`);
 }
 
-run("npm", ["run", "tauri", "build"]);
+if (!args.includes("--skip-build")) run("npm", ["run", "tauri", "build"], { shell: true });
 
 const dir = join(root, "src-tauri", "target", "release", "bundle", "nsis");
 const exe = `${conf.productName}_${version}_x64-setup.exe`;
