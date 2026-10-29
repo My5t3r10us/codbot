@@ -67,7 +67,12 @@ async function runDetail(run: db.Run, rerender: () => void) {
   const actions = h("div", { class: "row" },
     live ? act("Arrêter", () => runs.stopRun(run.id)) : null,
     !live && run.session_id && run.state !== "done" && run.state !== "failed" ? act("Reprendre", () => runs.resumeRun(run.id)) : null,
-    run.state === "blocked" ? act("Retenter vérification et push", () => runs.retryDeliver(run.id)) : null,
+    ["blocked", "stopped", "waiting_reply"].includes(run.state) && run.worktree_path
+      ? act("Livrer les commits", () => runs.retryDeliver(run.id))
+      : null,
+    run.session_id && run.worktree_path && !["done", "failed"].includes(run.state)
+      ? act("Ouvrir dans un terminal", () => runs.openInTerminal(run.id))
+      : null,
     run.state === "in_review" ? act("Vérifier le merge maintenant", () => runs.checkReview(run.id)) : null,
     run.state !== "done" && run.state !== "failed" ? act("Abandonner", () => runs.abandonRun(run.id), "danger") : null,
   );

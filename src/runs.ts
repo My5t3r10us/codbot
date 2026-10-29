@@ -613,6 +613,19 @@ export async function abandonRun(runId: string) {
   await releaseRun(run);
 }
 
+/**
+ * Reprendre la main : la session headless s'arrête et la même session s'ouvre dans un terminal
+ * `claude --resume`, dans le worktree. Les commits faits à la main se livrent ensuite avec
+ * « Livrer les commits ».
+ */
+export async function openInTerminal(runId: string) {
+  const run = await db.getRun(runId);
+  if (!run?.session_id || !run.worktree_path) throw new Error("Ce run n'a pas de session ou de worktree à ouvrir.");
+  if (sessions.get(runId)?.running) await stopRun(runId);
+  await invoke("open_claude_terminal", { cwd: run.worktree_path, sessionId: run.session_id });
+  await log(runId, "info", "session ouverte dans un terminal interactif");
+}
+
 export function isLive(runId: string) {
   return sessions.get(runId)?.running ?? false;
 }

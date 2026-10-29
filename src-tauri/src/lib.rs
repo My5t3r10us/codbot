@@ -220,6 +220,31 @@ fn write_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| e.to_string())
 }
 
+/// Vérifie les arguments avant de lancer un terminal : identifiant de session UUID, dossier existant.
+fn terminal_args(cwd: &str, session_id: &str) -> Result<(), String> {
+    uuid::Uuid::parse_str(session_id).map_err(|_| format!("identifiant de session invalide : {session_id}"))?;
+    if !std::path::Path::new(cwd).is_dir() {
+        return Err(format!("dossier introuvable : {cwd}"));
+    }
+    Ok(())
+}
+
+/// Ouvre la session d'un run dans un terminal interactif (`claude --resume`), dans son worktree.
+/// Windows Terminal s'il est installé, sinon une console classique.
+#[tauri::command]
+fn open_claude_terminal(cwd: String, session_id: String) -> Result<(), String> {
+    use std::process::Command;
+    terminal_args(&cwd, &session_id)?;
+    if Command::new("wt").args(["-d", &cwd, "claude", "--resume", &session_id]).spawn().is_ok() {
+        return Ok(());
+    }
+    Command::new("cmd")
+        .args(["/c", "start", "Codbot", "/D", &cwd, "cmd", "/k", "claude", "--resume", &session_id])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -315,6 +340,7 @@ pub fn run() {
             secret_delete,
             keep_awake,
             machine_name,
+            open_claude_terminal,
             read_text_file,
             write_text_file
         ])
@@ -334,5 +360,14 @@ mod tests {
         assert_eq!(authorized_run(&tokens, "/hook?token=t1&run=r9"), None, "run inconnu ou révoqué");
         assert_eq!(authorized_run(&tokens, "/hook?run=r1"), None, "sans jeton");
         assert_eq!(authorized_run(&HashMap::new(), "/hook?token=&run="), None, "tout vide");
+    }
+
+    #[test]
+    fn le_terminal_refuse_des_arguments_douteux() {
+        let dir = std::env::temp_dir();
+        let dir = dir.to_str().unwrap();
+        assert!(terminal_args(dir, "3c7b7ac0-f07f-4ed2-acf8-ccde5050ae6e").is_ok());
+        assert!(terminal_args(dir, "x & calc").is_err(), "session non UUID");
+        assert!(terminal_args("C:\\nexiste\\pas", "3c7b7ac0-f07f-4ed2-acf8-ccde5050ae6e").is_err());
     }
 }
