@@ -43,5 +43,23 @@ Le serveur Vite écoute sur le port 1430 (le prototype M0 garde le 1420).
   et restent reprenables.
 - Un seul run direct-main actif par repo. L'anti-veille est actif tant qu'une session tourne.
 
-Hors M1 (jalons suivants) : plusieurs tâches par run, branches et PR (M2), file d'attente et mode
-sans surveillance (M3), multi-PC et installeur (M4).
+## Ce qu'ajoute le M2
+
+- **Sélection multiple** dans l'onglet Tâches (cocher une tâche coche ses sous-tâches, désactivable),
+  puis « Assigner un agent » : choix du mode, de la stratégie git, et brief modifiable.
+- **Modes** : *groupé* (un agent, un worktree, toutes les tâches ; un commit par tâche avec son ID)
+  ou *séparé* (un agent et une branche par tâche, en parallèle).
+- **Règle de stratégie** (l'agent ne décide pas) : mode séparé à plusieurs tâches, ou run déjà actif
+  sur le repo → *branche* imposée. Sinon choix libre, avec *direct-main* proposé si une tâche porte
+  le tag `small`, *branche* sinon.
+- **Stratégie branche** : branche `cu/<id>-<titre>` (tâche parente en mode groupé), push, PR ouverte
+  avec `gh` (tâches liées et résumé de l'agent). Les tâches couvertes par un commit passent en
+  « revue » avec un commentaire. Un message à l'agent pendant la revue relance la session et met la
+  PR à jour, sans changer les statuts.
+- **Merge** : vérifié toutes les 60 s (ou à la demande). PR mergée → tâches « terminées »,
+  worktree et branche locale supprimés. PR fermée sans merge → run bloqué. Sans PR (remote hors
+  GitHub), le merge est détecté avec git.
+- **Suivi par tâche** en mode groupé : chaque tâche n'avance que si un commit porte son ID ;
+  les autres gardent leur statut, avec un avertissement dans le journal.
+
+Hors M2 (jalons suivants) : file d'attente et mode sans surveillance (M3), multi-PC et installeur (M4).

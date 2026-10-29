@@ -1,13 +1,16 @@
-// Moteur de runs (M1 : une tâche, stratégie direct-main) et synchronisation des statuts ClickUp.
+// Moteur de runs : modes séparé / groupé, stratégies direct-main / branche (PR),
+// et synchronisation des statuts ClickUp tâche par tâche.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { AgentSession } from "./agent";
 import * as cu from "./clickup";
 import * as db from "./db";
-import type { Project, Run, RunState, StatusEvent } from "./db";
+import type { GitStrategy, Project, Run, RunMode, RunState, StatusEvent } from "./db";
+import * as gh from "./gh";
 import * as git from "./git";
 
+/** États où un agent travaille (ou va travailler) dans le worktree. */
 export const ACTIVE_STATES: RunState[] = ["preparing", "running", "waiting_permission", "waiting_reply", "pushing"];
 
 /** Outils sans effet de bord, autorisés sans demander. */
@@ -15,9 +18,21 @@ const SAFE_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "TodoWrite", "TaskCrea
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 /** Une permission sans réponse au-delà de ce délai fait passer la tâche à « Bloqué ». */
 const BLOCKED_AFTER_MS = 60_000;
+/** Intervalle de vérification des PR en revue. */
+const REVIEW_POLL_MS = 60_000;
+/** Tag ClickUp qui propose direct-main par défaut. */
+const SMALL_TAG = "small";
 
 export type Permission = { id: string; runId: string; tool: string; input: Record<string, unknown>; at: number };
-export type Suggestion = { id: string; runId: string; taskId: string; taskName: string; status?: string; comment?: string };
+export type Suggestion = {
+  id: string;
+  runId: string;
+  taskId: string;
+  taskName: string;
+  event: StatusEvent;
+  status?: string;
+  comment?: string;
+};
 
 const sessions = new Map<string, AgentSession>();
 const nudged = new Set<string>();
@@ -60,18 +75,22 @@ async function syncKeepAwake() {
 
 // ---------- statuts ClickUp ----------
 
-async function syncStatus(run: Run, event: StatusEvent, comment?: string) {
+/** Applique (ou propose, en mode manuel) un événement de statut aux tâches indiquées du run. */
+async function syncStatus(run: Run, event: StatusEvent, comment?: string, taskIds: string[] = run.task_ids) {
   const mode = await db.getSetting<"auto" | "manual">("status_mode", "auto");
   const status = (await db.getMappings(run.list_id))[event];
-  if (!status && !comment) return;
-  for (const [i, taskId] of run.task_ids.entries()) {
-    const s: Suggestion = { id: crypto.randomUUID(), runId: run.id, taskId, taskName: run.task_names[i], status, comment };
+  for (const taskId of taskIds) {
+    const taskName = run.task_names[run.task_ids.indexOf(taskId)] ?? taskId;
+    const s: Suggestion = { id: crypto.randomUUID(), runId: run.id, taskId, taskName, event, status, comment };
+    if (event !== "blocked") run.task_progress[taskId] = event;
+    if (!status && !comment) continue;
     if (mode === "auto") await applySuggestion(s);
     else {
       suggestions.set(s.id, s);
-      await log(run.id, "status", `suggestion : ${status ? `passer en « ${status} »` : "commentaire"} (mode manuel)`);
+      await log(run.id, "status", `suggestion pour « ${taskName} » : ${status ? `passer en « ${status} »` : "commentaire"}`);
     }
   }
+  await db.updateRun(run.id, { task_progress: run.task_progress });
   changed();
 }
 
@@ -103,32 +122,63 @@ export function dismissSuggestion(id: string) {
   changed();
 }
 
-// ---------- lancement ----------
+// ---------- règle de stratégie git (§5.5 de la spec) ----------
 
-function buildBrief(task: cu.CuTask, run: Run) {
+export type StrategyChoice = { forced: GitStrategy | null; suggested: GitStrategy; reason: string };
+
+export async function strategyFor(tasks: cu.CuTask[], project: Project, mode: RunMode): Promise<StrategyChoice> {
+  const busy = (await db.listRuns()).filter((r) => r.repo_path === project.repo_path && ACTIVE_STATES.includes(r.state));
+  if (mode === "separe" && tasks.length > 1) {
+    return { forced: "branche", suggested: "branche", reason: "Plusieurs agents en parallèle : une branche par tâche." };
+  }
+  if (busy.length) {
+    return { forced: "branche", suggested: "branche", reason: `Un run est déjà actif sur ce repo (${busy[0].task_names.join(", ")}).` };
+  }
+  const small = tasks.some((t) => t.tags.some((tag) => tag.name.toLowerCase() === SMALL_TAG));
+  return small
+    ? { forced: null, suggested: "direct-main", reason: `Tag « ${SMALL_TAG} » : commit direct sur ${project.base_branch} proposé.` }
+    : { forced: null, suggested: "branche", reason: "Par défaut : branche et PR (tag « small » pour un commit direct)." };
+}
+
+// ---------- brief ----------
+
+function taskSection(task: cu.CuTask, heading: string) {
   const lines = [
-    `Tu travailles sur une tâche ClickUp, dans un worktree git dédié (HEAD détaché, basé sur origin/${run.base_branch}).`,
-    "",
-    `# ${task.name} [CU-${task.id}]`,
+    `${heading} ${task.name} [CU-${task.id}]`,
     `Lien : ${task.url}`,
     task.tags.length ? `Tags : ${task.tags.map((t) => t.name).join(", ")}` : "",
     "",
-    "## Description",
+    "Description :",
     task.markdown_description?.trim() || task.text_content?.trim() || "(vide)",
   ];
   if (task.subtasks?.length) {
-    lines.push("", "## Sous-tâches");
+    lines.push("", "Sous-tâches :");
     for (const st of task.subtasks) lines.push(`- ${st.name} (CU-${st.id}, ${st.status.status})`);
   }
   for (const cl of task.checklists ?? []) {
-    lines.push("", `## Checklist : ${cl.name}`);
+    lines.push("", `Checklist « ${cl.name} » :`);
     for (const it of cl.items) lines.push(`- [${it.resolved ? "x" : " "}] ${it.name}`);
   }
-  lines.push(
+  return lines;
+}
+
+export function buildBrief(tasks: cu.CuTask[], ctx: { worktree: string; base: string; branch: string | null }) {
+  const where = ctx.branch
+    ? `sur la branche ${ctx.branch}, créée depuis origin/${ctx.base}`
+    : `HEAD détaché, basé sur origin/${ctx.base}`;
+  const lines = [
+    tasks.length > 1
+      ? `Tu travailles sur ${tasks.length} tâches ClickUp liées, dans un worktree git dédié (${where}).`
+      : `Tu travailles sur une tâche ClickUp, dans un worktree git dédié (${where}).`,
     "",
+  ];
+  tasks.forEach((t, i) => lines.push(...taskSection(t, tasks.length > 1 ? `# Tâche ${i + 1} :` : "#"), ""));
+  lines.push(
     "## Consignes",
-    `- Travaille uniquement dans ce dossier : ${run.worktree_path}`,
-    `- Quand le travail est fini et vérifié, commite avec un message au format \`<type>: <résumé> [CU-${task.id}]\` (type : feat, fix, refactor, docs, test ou chore).`,
+    `- Travaille uniquement dans ce dossier : ${ctx.worktree}`,
+    tasks.length > 1
+      ? "- Fais au moins un commit par tâche. Chaque message porte l'ID de la tâche qu'il traite : `<type>: <résumé> [CU-<id>]` (type : feat, fix, refactor, docs, test ou chore)."
+      : `- Quand le travail est fini et vérifié, commite avec un message au format \`<type>: <résumé> [CU-${tasks[0].id}]\` (type : feat, fix, refactor, docs, test ou chore).`,
     "- Ne fais pas de push et ne change pas de branche : Codbot pousse lui-même après tes commits.",
     "- S'il te manque une information, pose ta question et arrête-toi sans commiter.",
     "- Termine par un court résumé de ce que tu as fait.",
@@ -136,20 +186,43 @@ function buildBrief(task: cu.CuTask, run: Run) {
   return lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n");
 }
 
-export async function launchRun(task: cu.CuTask, project: Project) {
-  const busy = (await db.listRuns()).find((r) => r.repo_path === project.repo_path && ACTIVE_STATES.includes(r.state));
-  if (busy) throw new Error(`Un run direct-main est déjà actif sur ce repo (${busy.task_names.join(", ")}).`);
-  if (!(await git.hasRemote(project.repo_path))) throw new Error(`Le repo ${project.repo_path} n'a pas de remote « origin ».`);
+// ---------- lancement ----------
 
+/** Repères du brief prévisualisé avant le lancement, remplacés par les vraies valeurs. */
+export const BRIEF_WORKTREE = "(dossier du worktree, créé au lancement)";
+export const BRIEF_BRANCH = "(cu/<id>-<titre>)";
+
+export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: string };
+
+/** Lance un ou plusieurs runs selon le mode. Renvoie les identifiants créés. */
+export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchOptions) {
+  const rule = await strategyFor(tasks, project, opts.mode);
+  const strategy = rule.forced ?? opts.strategy;
+  if (!(await git.hasRemote(project.repo_path))) throw new Error(`Le repo ${project.repo_path} n'a pas de remote « origin ».`);
+  const groups = opts.mode === "groupe" ? [tasks] : tasks.map((t) => [t]);
+  const ids: string[] = [];
+  for (const group of groups) ids.push(await launchOne(group, project, opts.mode, strategy, groups.length === 1 ? opts.brief : undefined));
+  return ids;
+}
+
+async function launchOne(tasks: cu.CuTask[], project: Project, mode: RunMode, strategy: GitStrategy, briefOverride?: string) {
+  // En mode groupé, la branche porte le nom de la tâche parente si elle fait partie du lot.
+  const ids = new Set(tasks.map((t) => t.id));
+  const lead = tasks.find((t) => tasks.some((o) => o.parent === t.id)) ?? tasks.find((t) => !t.parent || !ids.has(t.parent)) ?? tasks[0];
   const run: Run = {
     id: crypto.randomUUID(),
-    task_ids: [task.id],
-    task_names: [task.name],
+    task_ids: tasks.map((t) => t.id),
+    task_names: tasks.map((t) => t.name),
     list_id: project.list_id,
     repo_path: project.repo_path,
     worktree_path: null,
     base_branch: project.base_branch,
-    git_strategy: "direct-main",
+    git_strategy: strategy,
+    mode,
+    branch: strategy === "branche" ? git.branchName(lead.id, lead.name) : null,
+    pr_url: null,
+    task_progress: {},
+    task_initial_status: Object.fromEntries(tasks.map((t) => [t.id, t.status.status])),
     session_id: null,
     state: "preparing",
     base_commit: null,
@@ -163,11 +236,16 @@ export async function launchRun(task: cu.CuTask, project: Project) {
   changed();
   try {
     run.worktree_path = git.worktreePath(project.repo_path, run.id);
-    run.base_commit = await git.createWorktree(project.repo_path, project.base_branch, run.worktree_path);
+    run.base_commit = run.branch
+      ? await git.createBranchWorktree(project.repo_path, project.base_branch, run.branch, run.worktree_path)
+      : await git.createWorktree(project.repo_path, project.base_branch, run.worktree_path);
     await db.updateRun(run.id, { worktree_path: run.worktree_path, base_commit: run.base_commit });
-    await log(run.id, "git", `worktree ${run.worktree_path} sur origin/${run.base_branch} (${run.base_commit.slice(0, 7)})`);
-    const full = await cu.getTask(task.id);
-    await startSession(run, buildBrief(full, run));
+    await log(run.id, "git", `worktree ${run.worktree_path} ${run.branch ? `sur la branche ${run.branch}` : "détaché"} depuis origin/${run.base_branch} (${run.base_commit.slice(0, 7)})`);
+    const full = await Promise.all(tasks.map((t) => cu.getTask(t.id)));
+    const brief = briefOverride
+      ? briefOverride.split(BRIEF_WORKTREE).join(run.worktree_path).split(BRIEF_BRANCH).join(run.branch ?? "")
+      : buildBrief(full, { worktree: run.worktree_path, base: run.base_branch, branch: run.branch });
+    await startSession(run, brief);
     await syncStatus(run, "started");
   } catch (e) {
     await fail(run.id, e);
@@ -236,47 +314,141 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
     await block(run, "Des modifications restent non commitées après relance.");
     return;
   }
-  for (const id of run.task_ids) {
-    if (!commits.some((c) => c.subject.includes(`CU-${id}`))) {
-      await log(runId, "warn", `aucun commit ne porte l'ID CU-${id}`);
-    }
-  }
-  await pushRun(run, commits);
+  await deliver(run, commits);
 }
 
-async function pushRun(run: Run, commits: git.Commit[]) {
-  await setState(run.id, "pushing");
+/** Tâches couvertes par au moins un commit `[CU-<id>]`. Une tâche seule est couverte par tout commit. */
+function coveredTasks(run: Run, commits: git.Commit[]) {
+  if (run.task_ids.length === 1) return run.task_ids;
+  return run.task_ids.filter((id) => commits.some((c) => c.subject.includes(`CU-${id}`)));
+}
+
+async function verify(run: Run) {
   const project = await db.getProject(run.list_id);
-  if (project?.verify_command) {
-    await log(run.id, "git", `vérification : ${project.verify_command}`);
-    const v = await git.runVerify(run.worktree_path!, project.verify_command);
-    if (!v.ok) {
-      await block(run, `La vérification a échoué :\n${v.output}`);
-      return;
-    }
+  if (!project?.verify_command) return true;
+  await log(run.id, "git", `vérification : ${project.verify_command}`);
+  const v = await git.runVerify(run.worktree_path!, project.verify_command);
+  if (!v.ok) await block(run, `La vérification a échoué :\n${v.output}`);
+  return v.ok;
+}
+
+async function deliver(run: Run, commits: git.Commit[]) {
+  await setState(run.id, "pushing");
+  const covered = coveredTasks(run, commits);
+  for (const id of run.task_ids.filter((t) => !covered.includes(t))) {
+    await log(run.id, "warn", `aucun commit ne porte l'ID CU-${id} : son statut ne change pas`);
   }
+  if (!(await verify(run))) return;
   try {
-    const sha = await git.rebaseAndPush(run.worktree_path!, run.base_branch);
-    await setState(run.id, "done", { pushed_commit: sha });
-    await log(run.id, "git", `poussé sur ${run.base_branch} (${sha.slice(0, 7)})`);
-    const web = await git.remoteWebUrl(run.repo_path);
-    const comment = [
-      `Codbot : poussé sur ${run.base_branch}.`,
-      "",
-      "Commits :",
-      ...commits.map((c) => `- ${c.sha.slice(0, 7)} ${c.subject}`),
-      web ? `\n${web}/commit/${sha}` : "",
-      "",
-      "Résumé de l'agent :",
-      (run.summary ?? "").slice(0, 1500),
-    ].join("\n");
-    await syncStatus(run, "done", comment);
-    await finish(run);
-    await notify("Codbot : tâche poussée", run.task_names.join(", "));
+    if (run.git_strategy === "direct-main") await deliverDirect(run, commits, covered);
+    else await deliverBranch(run, commits, covered);
   } catch (e) {
     await block(run, (e as Error).message);
   }
 }
+
+function commitLines(commits: git.Commit[]) {
+  return ["Commits :", ...commits.map((c) => `- ${c.sha.slice(0, 7)} ${c.subject}`)];
+}
+
+async function deliverDirect(run: Run, commits: git.Commit[], covered: string[]) {
+  const sha = await git.rebaseAndPush(run.worktree_path!, run.base_branch);
+  await setState(run.id, "done", { pushed_commit: sha });
+  await log(run.id, "git", `poussé sur ${run.base_branch} (${sha.slice(0, 7)})`);
+  const web = await git.remoteWebUrl(run.repo_path);
+  const comment = [
+    `Codbot : poussé sur ${run.base_branch}.`,
+    "",
+    ...commitLines(commits),
+    web ? `\n${web}/commit/${sha}` : "",
+    "",
+    "Résumé de l'agent :",
+    (run.summary ?? "").slice(0, 1500),
+  ].join("\n");
+  await syncStatus(run, "done", comment, covered);
+  await finish(run);
+  await notify("Codbot : poussé", run.task_names.join(", "));
+}
+
+async function deliverBranch(run: Run, commits: git.Commit[], covered: string[]) {
+  const sha = await git.pushBranch(run.worktree_path!, run.branch!);
+  await log(run.id, "git", `branche ${run.branch} poussée (${sha.slice(0, 7)})`);
+  const firstPush = !run.pr_url;
+  let prUrl = run.pr_url;
+  if (!prUrl) {
+    const title = run.task_ids.length === 1
+      ? `${run.task_names[0]} [CU-${run.task_ids[0]}]`
+      : `${run.task_names[0]} (+${run.task_ids.length - 1}) [${run.task_ids.map((id) => `CU-${id}`).join(", ")}]`;
+    const tasksMd = run.task_ids.map((id, i) => `- [${run.task_names[i]}](https://app.clickup.com/t/${id}) (CU-${id})`);
+    const body = ["Tâches ClickUp :", ...tasksMd, "", "Résumé de l'agent :", "", run.summary ?? "", "", "_PR ouverte par Codbot._"].join("\n");
+    try {
+      prUrl = await gh.createPr(run.repo_path, { base: run.base_branch, head: run.branch!, title, body });
+      await log(run.id, "git", `PR ouverte : ${prUrl}`);
+    } catch (e) {
+      // Remote hors GitHub ou gh indisponible : le merge sera détecté via git.
+      await log(run.id, "warn", `PR non ouverte (${(e as Error).message}). Le merge de ${run.branch} sera détecté via git.`);
+    }
+  }
+  await setState(run.id, "in_review", { pushed_commit: sha, pr_url: prUrl });
+  run.pr_url = prUrl;
+  run.pushed_commit = sha;
+  // Le statut « en revue » n'est appliqué qu'aux tâches qui ne l'ont pas déjà.
+  const toReview = covered.filter((id) => run.task_progress[id] !== "review");
+  if (toReview.length) {
+    const comment = [
+      `Codbot : branche ${run.branch} poussée${prUrl ? ", PR ouverte" : ""}.`,
+      prUrl ? prUrl : "",
+      "",
+      ...commitLines(commits),
+    ].join("\n");
+    await syncStatus(run, "review", comment, toReview);
+  }
+  // L'agent a fini son tour : on libère le processus, la session reste reprenable pour des corrections.
+  await sessions.get(run.id)?.stop();
+  sessions.delete(run.id);
+  await syncKeepAwake();
+  await notify(firstPush ? "Codbot : PR prête à relire" : "Codbot : PR mise à jour", run.task_names.join(", "));
+}
+
+// ---------- surveillance des PR en revue ----------
+
+export async function checkReview(runId: string) {
+  const run = await db.getRun(runId);
+  if (!run || run.state !== "in_review" || !run.pushed_commit) return;
+  if (run.pr_url) {
+    const pr = await gh.prState(run.repo_path, run.pr_url);
+    if (pr.state === "MERGED") return markMerged(run);
+    if (pr.state === "CLOSED") return block(run, `La PR a été fermée sans merge : ${run.pr_url}`);
+    return;
+  }
+  if (await git.isMergedInto(run.repo_path, run.pushed_commit, run.base_branch)) await markMerged(run);
+}
+
+async function markMerged(run: Run) {
+  await setState(run.id, "done");
+  await log(run.id, "git", `${run.pr_url ? "PR mergée" : `branche ${run.branch} mergée`} dans ${run.base_branch}`);
+  const reviewed = run.task_ids.filter((id) => run.task_progress[id] === "review");
+  await syncStatus(run, "done", `Codbot : ${run.pr_url ? `PR mergée (${run.pr_url})` : `branche ${run.branch} mergée`} dans ${run.base_branch}.`, reviewed);
+  await finish(run);
+  if (run.branch) await git.deleteLocalBranch(run.repo_path, run.branch);
+  await notify("Codbot : PR mergée", run.task_names.join(", "));
+}
+
+let polling = false;
+async function pollReviews() {
+  if (polling) return;
+  polling = true;
+  try {
+    for (const run of await db.listRuns()) {
+      if (run.state !== "in_review") continue;
+      await checkReview(run.id).catch((e) => log(run.id, "warn", `vérification du merge : ${(e as Error).message}`));
+    }
+  } finally {
+    polling = false;
+  }
+}
+
+// ---------- blocages et fin ----------
 
 async function block(run: Run, reason: string) {
   await setState(run.id, "blocked", { error: reason });
@@ -309,11 +481,11 @@ export async function sendMessage(runId: string, text: string) {
   if (session?.running) {
     await session.send(text);
     await setState(runId, "running");
-    await syncStatus(run, "started");
   } else {
     await startSession(run, text, Boolean(run.session_id));
-    await syncStatus(run, "started");
   }
+  // Une demande de correction pendant la revue ne fait pas repasser les tâches « en cours ».
+  if (run.state !== "in_review") await syncStatus(run, "started");
 }
 
 export async function resumeRun(runId: string) {
@@ -326,22 +498,47 @@ export async function stopRun(runId: string) {
   await setState(runId, "stopped");
 }
 
-/** Revérifie les commits et retente la vérification et le push (après correction manuelle, par exemple). */
-export async function retryPush(runId: string) {
+/** Revérifie les commits et retente la vérification et la livraison (après correction manuelle, par exemple). */
+export async function retryDeliver(runId: string) {
   const run = await db.getRun(runId);
   if (!run?.worktree_path || !run.base_commit) return;
   const commits = await git.commitsSince(run.worktree_path, run.base_commit);
   if (!commits.length) throw new Error("Aucun commit à pousser.");
-  await pushRun(run, commits);
+  await deliver(run, commits);
+}
+
+/** Remet le statut d'avant le run sur les tâches que le run n'a pas terminées. */
+async function restoreStatuses(run: Run) {
+  const mode = await db.getSetting<"auto" | "manual">("status_mode", "auto");
+  for (const [i, taskId] of run.task_ids.entries()) {
+    const initial = run.task_initial_status[taskId];
+    if (!initial || run.task_progress[taskId] === "done") continue;
+    const s: Suggestion = {
+      id: crypto.randomUUID(),
+      runId: run.id,
+      taskId,
+      taskName: run.task_names[i],
+      event: "started",
+      status: initial,
+      comment: `Codbot : run abandonné, statut remis à « ${initial} ».`,
+    };
+    if (mode === "auto") await applySuggestion(s);
+    else suggestions.set(s.id, s);
+  }
+  changed();
 }
 
 export async function abandonRun(runId: string) {
   const run = await db.getRun(runId);
   if (!run) return;
+  for (const s of [...suggestions.values()]) if (s.runId === runId) suggestions.delete(s.id);
   await sessions.get(runId)?.stop();
   sessions.delete(runId);
   if (run.worktree_path) await git.removeWorktree(run.repo_path, run.worktree_path);
+  // Une branche jamais poussée n'existe que localement : on la supprime avec le worktree.
+  if (run.branch && !run.pushed_commit) await git.deleteLocalBranch(run.repo_path, run.branch);
   await setState(runId, "failed", { error: "Abandonné par l'utilisateur" });
+  await restoreStatuses(run);
 }
 
 export function isLive(runId: string) {
@@ -414,4 +611,6 @@ export async function init() {
       await db.addRunEvent(run.id, "info", "Codbot a redémarré : run arrêté, reprise possible");
     }
   }
+  void pollReviews();
+  setInterval(() => void pollReviews(), REVIEW_POLL_MS);
 }

@@ -5,7 +5,7 @@ export type StatusEvent = "started" | "blocked" | "review" | "done";
 export const STATUS_EVENTS: { event: StatusEvent; label: string }[] = [
   { event: "started", label: "Run démarré" },
   { event: "blocked", label: "Question, permission ou erreur en attente" },
-  { event: "review", label: "Branche poussée / PR ouverte (M2)" },
+  { event: "review", label: "Branche poussée / PR ouverte" },
   { event: "done", label: "Poussé sur la branche principale" },
 ];
 
@@ -23,10 +23,14 @@ export type RunState =
   | "waiting_permission"
   | "waiting_reply"
   | "pushing"
+  | "in_review"
   | "done"
   | "blocked"
   | "failed"
   | "stopped";
+
+export type GitStrategy = "direct-main" | "branche";
+export type RunMode = "separe" | "groupe";
 
 export type Run = {
   id: string;
@@ -36,7 +40,14 @@ export type Run = {
   repo_path: string;
   worktree_path: string | null;
   base_branch: string;
-  git_strategy: "direct-main";
+  git_strategy: GitStrategy;
+  mode: RunMode;
+  branch: string | null;
+  pr_url: string | null;
+  /** Dernier événement de statut appliqué à chaque tâche. */
+  task_progress: Record<string, StatusEvent>;
+  /** Statut ClickUp de chaque tâche au lancement, remis en place si le run est abandonné. */
+  task_initial_status: Record<string, string>;
   session_id: string | null;
   state: RunState;
   base_commit: string | null;
@@ -120,30 +131,47 @@ export async function setMapping(listId: string, event: StatusEvent, status: str
 
 // ---------- runs ----------
 
-type RunRow = Omit<Run, "task_ids" | "task_names"> & { task_ids: string; task_names: string };
-const toRun = (r: RunRow): Run => ({ ...r, task_ids: JSON.parse(r.task_ids), task_names: JSON.parse(r.task_names) });
+type RunRow = Omit<Run, "task_ids" | "task_names" | "task_progress" | "task_initial_status"> & {
+  task_ids: string;
+  task_names: string;
+  task_progress: string;
+  task_initial_status: string;
+};
+const toRun = (r: RunRow): Run => ({
+  ...r,
+  task_ids: JSON.parse(r.task_ids),
+  task_names: JSON.parse(r.task_names),
+  task_progress: JSON.parse(r.task_progress || "{}"),
+  task_initial_status: JSON.parse(r.task_initial_status || "{}"),
+});
 
 export async function insertRun(run: Run) {
   await (await conn()).execute(
     `INSERT INTO runs (id, task_ids, task_names, list_id, repo_path, worktree_path, base_branch, git_strategy,
-       session_id, state, base_commit, pushed_commit, summary, error, created_at, ended_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+       session_id, state, base_commit, pushed_commit, summary, error, created_at, ended_at, mode, branch, pr_url, task_progress,
+       task_initial_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
     [
       run.id, JSON.stringify(run.task_ids), JSON.stringify(run.task_names), run.list_id, run.repo_path,
       run.worktree_path, run.base_branch, run.git_strategy, run.session_id, run.state, run.base_commit,
-      run.pushed_commit, run.summary, run.error, run.created_at, run.ended_at,
+      run.pushed_commit, run.summary, run.error, run.created_at, run.ended_at, run.mode, run.branch, run.pr_url,
+      JSON.stringify(run.task_progress), JSON.stringify(run.task_initial_status),
     ],
   );
 }
 
-const RUN_FIELDS = ["worktree_path", "session_id", "state", "base_commit", "pushed_commit", "summary", "error", "ended_at"] as const;
+const RUN_FIELDS = [
+  "worktree_path", "session_id", "state", "base_commit", "pushed_commit", "summary", "error", "ended_at",
+  "branch", "pr_url", "task_progress",
+] as const;
 type RunPatch = Partial<Pick<Run, (typeof RUN_FIELDS)[number]>>;
 
 export async function updateRun(id: string, patch: RunPatch) {
   const keys = RUN_FIELDS.filter((k) => k in patch);
   if (!keys.length) return;
   const sets = keys.map((k, i) => `${k} = $${i + 2}`).join(", ");
-  await (await conn()).execute(`UPDATE runs SET ${sets} WHERE id = $1`, [id, ...keys.map((k) => patch[k] ?? null)]);
+  const value = (k: (typeof keys)[number]) => (k === "task_progress" ? JSON.stringify(patch[k]) : (patch[k] ?? null));
+  await (await conn()).execute(`UPDATE runs SET ${sets} WHERE id = $1`, [id, ...keys.map(value)]);
 }
 
 export async function listRuns(limit = 100) {

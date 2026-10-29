@@ -1,11 +1,12 @@
-// Vue des tâches : tâches des listes associées à un repo, avec lancement d'un agent.
+// Vue des tâches : tâches des listes associées à un repo, sélection multiple et lancement d'agents.
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as cu from "../clickup";
 import * as db from "../db";
 import { errorBox, h } from "../dom";
-import { ACTIVE_STATES, launchRun } from "../runs";
+import * as runs from "../runs";
 
-const filters = { listId: "", search: "", mine: false, closed: false };
+const filters = { listId: "", search: "", mine: false, closed: false, withSubtasks: true };
+const selected = new Set<string>();
 let me: cu.CuUser | null = null;
 
 export async function renderTasks(root: HTMLElement, goToRun: (id: string) => void) {
@@ -19,10 +20,16 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
   const project = projects.find((p) => p.list_id === filters.listId)!;
 
   const body = h("div", {}, h("p", { class: "muted" }, "Chargement des tâches…"));
-  const rerender = () => renderTasks(root, goToRun);
+  const bar = h("div", { class: "row" });
+  const dialog = h("div");
   const toolbar = h("div", { class: "row" },
-    h("select", { onchange: (e: Event) => { filters.listId = (e.target as HTMLSelectElement).value; void rerender(); } },
-      ...projects.map((p) => h("option", { value: p.list_id, selected: p.list_id === filters.listId }, p.list_name))),
+    h("select", {
+      onchange: (e: Event) => {
+        filters.listId = (e.target as HTMLSelectElement).value;
+        selected.clear();
+        void renderTasks(root, goToRun);
+      },
+    }, ...projects.map((p) => h("option", { value: p.list_id, selected: p.list_id === filters.listId }, p.list_name))),
     h("input", {
       placeholder: "Rechercher…",
       value: filters.search,
@@ -34,25 +41,105 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
     h("label", { class: "inline" },
       h("input", { type: "checkbox", checked: filters.closed, onchange: (e: Event) => { filters.closed = (e.target as HTMLInputElement).checked; tasks = null; void fill(); } }),
       "Inclure les terminées"),
+    h("label", { class: "inline" },
+      h("input", { type: "checkbox", checked: filters.withSubtasks, onchange: (e: Event) => { filters.withSubtasks = (e.target as HTMLInputElement).checked; } }),
+      "Cocher une tâche coche ses sous-tâches"),
     h("button", { class: "ghost", onclick: () => { tasks = null; void fill(); } }, "Rafraîchir"),
   );
   root.replaceChildren(h("section", { class: "card" },
     h("div", { class: "row spread" }, h("h2", {}, project.list_name), h("span", { class: "muted small" }, project.repo_path)),
-    toolbar, body));
+    toolbar, bar, dialog, body));
 
   let tasks: cu.CuTask[] | null = null;
   async function fill() {
     try {
       me ??= await cu.getUser();
       tasks ??= await cu.getListTasks(project.list_id, filters.closed);
-      const runs = (await db.listRuns()).filter((r) => ACTIVE_STATES.includes(r.state) || r.state === "blocked");
-      body.replaceChildren(table(tasks, runs));
+      const open = (await db.listRuns()).filter((r) => runs.ACTIVE_STATES.includes(r.state) || ["blocked", "in_review"].includes(r.state));
+      body.replaceChildren(table(tasks, open));
+      renderBar();
     } catch (e) {
       body.replaceChildren(errorBox(e));
     }
   }
 
-  function table(all: cu.CuTask[], runs: db.Run[]) {
+  function renderBar() {
+    const chosen = (tasks ?? []).filter((t) => selected.has(t.id));
+    bar.replaceChildren(
+      chosen.length
+        ? h("span", {}, `${chosen.length} tâche(s) sélectionnée(s)`)
+        : h("span", { class: "muted small" }, "Coche une ou plusieurs tâches pour leur assigner un agent."),
+      chosen.length ? h("button", { onclick: () => void openDialog(chosen) }, "Assigner un agent") : "",
+      chosen.length ? h("button", { class: "ghost", onclick: () => { selected.clear(); dialog.replaceChildren(); void fill(); } }, "Tout décocher") : "",
+    );
+  }
+
+  async function openDialog(chosen: cu.CuTask[]) {
+    let mode: db.RunMode = chosen.length > 1 ? "groupe" : "separe";
+    let strategy: db.GitStrategy = "branche";
+    const briefBox = h("textarea", { rows: 12 }) as HTMLTextAreaElement;
+    let briefEdited = false;
+    briefBox.oninput = () => (briefEdited = true);
+    const content = h("div");
+
+    async function refresh() {
+      const rule = await runs.strategyFor(chosen, project, mode);
+      if (rule.forced) strategy = rule.forced;
+      const radio = <T extends string>(name: string, value: T, current: T, label: string, set: (v: T) => void, disabled = false) =>
+        h("label", { class: "inline" },
+          h("input", { type: "radio", name, checked: current === value, disabled, onchange: () => { set(value); void refresh(); } }),
+          label);
+      const single = mode === "groupe" || chosen.length === 1;
+      if (single && !briefEdited) {
+        const full = await Promise.all(chosen.map((t) => cu.getTask(t.id)));
+        briefBox.value = runs.buildBrief(full, {
+          worktree: runs.BRIEF_WORKTREE,
+          base: project.base_branch,
+          branch: strategy === "branche" ? runs.BRIEF_BRANCH : null,
+        });
+      }
+      content.replaceChildren(
+        chosen.length > 1
+          ? h("div", { class: "row" },
+              h("b", {}, "Mode :"),
+              radio("mode", "groupe", mode, "Groupé : un agent pour toutes les tâches", (v) => (mode = v)),
+              radio("mode", "separe", mode, `Séparé : ${chosen.length} agents en parallèle`, (v) => (mode = v)))
+          : "",
+        h("div", { class: "row" },
+          h("b", {}, "Git :"),
+          radio("strategy", "branche", strategy, "Branche + PR", (v) => (strategy = v), Boolean(rule.forced)),
+          radio("strategy", "direct-main", strategy, `Commit direct sur ${project.base_branch}`, (v) => (strategy = v), Boolean(rule.forced))),
+        h("p", { class: "muted small" }, rule.reason),
+        single
+          ? h("div", {}, h("h3", {}, "Brief envoyé à l'agent (modifiable)"), briefBox)
+          : h("p", { class: "muted small" }, "En mode séparé, chaque agent reçoit le brief de sa tâche."),
+        h("div", { class: "row" },
+          h("button", {
+            onclick: async (e: Event) => {
+              const btn = e.target as HTMLButtonElement;
+              btn.disabled = true;
+              btn.textContent = "Lancement…";
+              try {
+                const ids = await runs.launch(chosen, project, { mode, strategy, brief: single && briefEdited ? briefBox.value : undefined });
+                selected.clear();
+                goToRun(ids[0]);
+              } catch (err) {
+                btn.disabled = false;
+                btn.textContent = "Lancer maintenant";
+                btn.after(errorBox(err));
+              }
+            },
+          }, "Lancer maintenant"),
+          h("button", { class: "ghost", onclick: () => dialog.replaceChildren() }, "Annuler")),
+      );
+    }
+
+    dialog.replaceChildren(h("div", { class: "card" },
+      h("h3", {}, `Assigner un agent : ${chosen.map((t) => t.name).join(", ")}`), content));
+    await refresh();
+  }
+
+  function table(all: cu.CuTask[], open: db.Run[]) {
     const q = filters.search.toLowerCase();
     const visible = all.filter((t) =>
       (!q || t.name.toLowerCase().includes(q) || t.id.includes(q)) &&
@@ -62,34 +149,37 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
     const roots = visible.filter((t) => !t.parent || !ids.has(t.parent));
     const children = (id: string) => visible.filter((t) => t.parent === id);
 
-    const tbl = h("table", {}, h("tr", {}, h("th", {}, "Tâche"), h("th", {}, "Statut"), h("th", {}, "Assignés"), h("th", {}, "Agent")));
+    const tbl = h("table", {},
+      h("tr", {}, h("th", {}, ""), h("th", {}, "Tâche"), h("th", {}, "Statut"), h("th", {}, "Assignés"), h("th", {}, "Agent")));
     const row = (t: cu.CuTask, sub: boolean) => {
-      const run = runs.find((r) => r.task_ids.includes(t.id));
-      const action = run
-        ? h("a", { onclick: () => goToRun(run.id) }, `run ${run.state}`)
-        : h("button", {
-            onclick: async (e: Event) => {
-              const btn = e.target as HTMLButtonElement;
-              btn.disabled = true;
-              btn.textContent = "Lancement…";
-              try {
-                goToRun(await launchRun(t, project));
-              } catch (err) {
-                btn.replaceWith(errorBox(err));
-              }
-            },
-          }, "Lancer un agent");
+      const run = open.find((r) => r.task_ids.includes(t.id));
+      const box = h("input", {
+        type: "checkbox",
+        checked: selected.has(t.id),
+        disabled: Boolean(run),
+        onchange: (e: Event) => {
+          const on = (e.target as HTMLInputElement).checked;
+          const targets = [t, ...(filters.withSubtasks ? all.filter((c) => c.parent === t.id) : [])];
+          for (const x of targets) {
+            if (on && !open.some((r) => r.task_ids.includes(x.id))) selected.add(x.id);
+            else if (!on) selected.delete(x.id);
+          }
+          body.replaceChildren(table(all, open));
+          renderBar();
+        },
+      });
       tbl.append(h("tr", { class: sub ? "sub" : "" },
+        h("td", {}, box),
         h("td", {}, h("a", { onclick: () => openUrl(t.url) }, t.name), h("span", { class: "muted small" }, `  CU-${t.id}`)),
         h("td", {}, h("span", { class: "pill", style: `background:${t.status.color}` }, t.status.status)),
         h("td", { class: "small" }, t.assignees.map((a) => a.username).join(", ")),
-        h("td", {}, action)));
+        h("td", {}, run ? h("a", { onclick: () => goToRun(run.id) }, `run ${run.state}`) : "")));
     };
     for (const t of roots) {
       row(t, false);
       for (const c of children(t.id)) row(c, true);
     }
-    if (!roots.length) tbl.append(h("tr", {}, h("td", { colSpan: 4, class: "muted" }, "Aucune tâche.")));
+    if (!roots.length) tbl.append(h("tr", {}, h("td", { colSpan: 5, class: "muted" }, "Aucune tâche.")));
     return tbl;
   }
 

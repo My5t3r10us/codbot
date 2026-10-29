@@ -1,4 +1,5 @@
 // Vue des runs : liste, détail (journal, permissions, message à l'agent, actions).
+import { openUrl } from "@tauri-apps/plugin-opener";
 import * as db from "../db";
 import { errorBox, fmtDate, h } from "../dom";
 import * as runs from "../runs";
@@ -9,10 +10,17 @@ const STATE_LABEL: Record<db.RunState, string> = {
   waiting_permission: "attend une permission",
   waiting_reply: "attend une réponse",
   pushing: "push en cours",
+  in_review: "en revue",
   done: "terminé",
   blocked: "bloqué",
   failed: "échec",
   stopped: "arrêté",
+};
+
+const PROGRESS_LABEL: Partial<Record<db.StatusEvent, string>> = {
+  started: "en cours",
+  review: "en revue",
+  done: "terminée",
 };
 
 export let selectedRun: string | null = null;
@@ -58,7 +66,8 @@ async function runDetail(run: db.Run, rerender: () => void) {
   const actions = h("div", { class: "row" },
     live ? act("Arrêter", () => runs.stopRun(run.id)) : null,
     !live && run.session_id && run.state !== "done" && run.state !== "failed" ? act("Reprendre", () => runs.resumeRun(run.id)) : null,
-    run.state === "blocked" ? act("Retenter vérification et push", () => runs.retryPush(run.id)) : null,
+    run.state === "blocked" ? act("Retenter vérification et push", () => runs.retryDeliver(run.id)) : null,
+    run.state === "in_review" ? act("Vérifier le merge maintenant", () => runs.checkReview(run.id)) : null,
     run.state !== "done" && run.state !== "failed" ? act("Abandonner", () => runs.abandonRun(run.id), "danger") : null,
   );
 
@@ -73,7 +82,10 @@ async function runDetail(run: db.Run, rerender: () => void) {
             act("Refuser", () => runs.decide(p.id, false), "danger")))))
     : null;
 
-  const msg = h("textarea", { rows: 2, placeholder: "Répondre ou donner une consigne à l'agent…" }) as HTMLTextAreaElement;
+  const msg = h("textarea", {
+    rows: 2,
+    placeholder: run.state === "in_review" ? "Demander une correction à l'agent (la PR sera mise à jour)…" : "Répondre ou donner une consigne à l'agent…",
+  }) as HTMLTextAreaElement;
   const canMessage = live || (run.session_id && run.state !== "done" && run.state !== "failed");
   const composer = canMessage
     ? h("div", { class: "row" }, msg, act("Envoyer", async () => { if (msg.value.trim()) await runs.sendMessage(run.id, msg.value.trim()); }, ""))
@@ -89,9 +101,16 @@ async function runDetail(run: db.Run, rerender: () => void) {
       h("h2", {}, run.task_names.join(", ")),
       h("span", { class: `state ${run.state}` }, STATE_LABEL[run.state])),
     h("p", { class: "muted small" },
-      `${run.git_strategy} sur ${run.base_branch} · ${run.repo_path}`,
-      run.worktree_path && active ? ` · worktree ${run.worktree_path}` : "",
+      run.git_strategy === "branche" ? `branche ${run.branch} → ${run.base_branch}` : `commit direct sur ${run.base_branch}`,
+      run.task_ids.length > 1 ? ` · mode ${run.mode === "groupe" ? "groupé" : "séparé"}` : "",
+      ` · ${run.repo_path}`,
+      run.worktree_path && (active || run.state === "in_review") ? ` · worktree ${run.worktree_path}` : "",
       run.pushed_commit ? ` · poussé ${run.pushed_commit.slice(0, 7)}` : ""),
+    run.pr_url ? h("p", {}, "PR : ", h("a", { onclick: () => openUrl(run.pr_url!) }, run.pr_url)) : null,
+    run.task_ids.length > 1
+      ? h("ul", { class: "small" }, ...run.task_ids.map((id, i) =>
+          h("li", {}, `${run.task_names[i]} (CU-${id}) : `, h("b", {}, PROGRESS_LABEL[run.task_progress[id]] ?? "en attente"))))
+      : null,
     run.error ? h("pre", { class: "err" }, run.error) : null,
     actions, perms, composer,
     h("h3", {}, "Journal"), log);

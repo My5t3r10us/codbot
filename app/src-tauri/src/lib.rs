@@ -181,12 +181,26 @@ fn keep_awake(state: State<Awake>, on: bool) -> Result<bool, String> {
 }
 
 fn migrations() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        description: "schema initial",
-        kind: MigrationKind::Up,
-        sql: include_str!("../migrations/001_init.sql"),
-    }]
+    vec![
+        Migration {
+            version: 1,
+            description: "schema initial",
+            kind: MigrationKind::Up,
+            sql: include_str!("../migrations/001_init.sql"),
+        },
+        Migration {
+            version: 2,
+            description: "branches et PR",
+            kind: MigrationKind::Up,
+            sql: include_str!("../migrations/002_branches.sql"),
+        },
+        Migration {
+            version: 3,
+            description: "statut initial des taches",
+            kind: MigrationKind::Up,
+            sql: include_str!("../migrations/003_initial_status.sql"),
+        },
+    ]
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

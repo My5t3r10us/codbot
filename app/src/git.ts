@@ -39,9 +39,49 @@ export async function createWorktree(repo: string, base: string, path: string) {
   return git(path, "rev-parse", "HEAD");
 }
 
+/** Worktree sur une nouvelle branche `branch`, créée depuis `origin/<base>` à jour. */
+export async function createBranchWorktree(repo: string, base: string, branch: string, path: string) {
+  await git(repo, "fetch", "origin", base);
+  await git(repo, "worktree", "add", "-b", branch, path, `origin/${base}`);
+  return git(path, "rev-parse", "HEAD");
+}
+
 export async function removeWorktree(repo: string, path: string) {
   await git(repo, "worktree", "remove", "--force", path).catch(() => {});
   await git(repo, "worktree", "prune").catch(() => {});
+}
+
+export async function deleteLocalBranch(repo: string, branch: string) {
+  await git(repo, "branch", "-D", branch).catch(() => {});
+}
+
+/** Nom de branche lisible : cu/<id>-<titre-en-slug>. */
+export function branchName(taskId: string, title: string) {
+  const slug = title
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40)
+    .replace(/-$/, "");
+  return `cu/${taskId}${slug ? `-${slug}` : ""}`;
+}
+
+export async function pushBranch(path: string, branch: string) {
+  await git(path, "push", "-u", "origin", `HEAD:refs/heads/${branch}`);
+  return git(path, "rev-parse", "HEAD");
+}
+
+/** Vrai si `sha` est contenu dans `origin/<base>` (merge classique ou fast-forward). */
+export async function isMergedInto(repo: string, sha: string, base: string) {
+  await git(repo, "fetch", "origin", base);
+  try {
+    await git(repo, "merge-base", "--is-ancestor", sha, `origin/${base}`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export type Commit = { sha: string; subject: string };
