@@ -26,12 +26,16 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "shortDescription": "Tâches ClickUp et agents Claude Code",
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["French"]
+        "languages": [
+          "French"
+        ]
       }
     },
     "icon": [
@@ -40,6 +44,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUxRDJEOEE5MzI2NUEwODYKUldTR29HVXlxZGpTNGI1S0c0ZERnYjJJWDZva3RXZ25XOFkwOU1KOUJzc3RxOGlwa0h4MHBHZnQK",
+      "endpoints": [
+        "https://github.com/My5t3r10us/codbot/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

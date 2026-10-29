@@ -3,6 +3,7 @@ import * as cu from "../clickup";
 import { runChecks } from "../diag";
 import * as lock from "../lock";
 import * as settingsio from "../settingsio";
+import * as updater from "../updater";
 import * as db from "../db";
 import { errorBox, h } from "../dom";
 import { DEFAULT_ALLOWLIST } from "../allowlist";
@@ -17,7 +18,41 @@ export async function renderSettings(root: HTMLElement) {
     await modeCard(),
     await projectsCard(),
     shareCard(() => renderSettings(root)),
+    updateCard(),
   );
+}
+
+function updateCard() {
+  const status = h("p", { class: "muted" }, "Vérification…");
+  const actions = h("div", { class: "row" });
+  const refresh = async () => {
+    actions.replaceChildren();
+    try {
+      const info = await updater.checkForUpdate();
+      if (!info.available) {
+        status.textContent = `Version ${info.current} : à jour.`;
+        status.className = "ok";
+        return;
+      }
+      const up = info.available;
+      status.textContent = `Version ${info.current} installée, version ${up.version} disponible.${up.body ? ` ${up.body}` : ""}`;
+      status.className = "warn";
+      actions.append(h("button", {
+        onclick: async (e: Event) => {
+          (e.target as HTMLButtonElement).disabled = true;
+          await updater.installAndRelaunch(up, (pct) => (status.textContent = `Téléchargement${pct === null ? "…" : ` : ${pct} %`}`));
+        },
+      }, "Installer et redémarrer"));
+    } catch (e) {
+      status.textContent = `Vérification impossible : ${(e as Error).message}`;
+      status.className = "err";
+    }
+  };
+  void refresh();
+  return h("section", { class: "card" },
+    h("div", { class: "row spread" }, h("h2", {}, "Version et mises à jour"), h("button", { class: "ghost", onclick: refresh }, "Vérifier")),
+    status, actions,
+    h("p", { class: "muted small" }, "Les mises à jour sont publiées dans les releases GitHub de Codbot et signées : une version non signée par Codbot est refusée."));
 }
 
 function diagCard() {

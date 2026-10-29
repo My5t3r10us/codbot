@@ -1,6 +1,7 @@
 // Point d'entrée : navigation entre les vues, bandeau des suggestions de statut (mode manuel).
 import * as db from "./db";
 import { runChecks } from "./diag";
+import { checkForUpdate } from "./updater";
 import { errorBox, h } from "./dom";
 import * as queue from "./queue";
 import * as runs from "./runs";
@@ -81,6 +82,16 @@ await queue.init();
 await renderActiveCount();
 await renderQueueCount();
 await show((await db.listProjects()).some((p) => p.repo_path) ? "tasks" : "settings");
+
+// Mise à jour disponible : signalée sur l'onglet Réglages (l'installation se lance depuis Réglages).
+void checkForUpdate()
+  .then((info) => {
+    if (!info.available) return;
+    const btn = document.querySelector<HTMLButtonElement>('nav button[data-view="settings"]')!;
+    btn.textContent = "Réglages ⬆";
+    btn.title = `Version ${info.available.version} disponible`;
+  })
+  .catch(() => {});
 
 // Diagnostic au démarrage : un problème (CLI déconnecté, jeton invalide…) se signale sur l'onglet Réglages.
 void runChecks().then((checks) => {
