@@ -481,19 +481,20 @@ async function fail(runId: string, e: unknown) {
   await setState(runId, "failed", { error: msg });
   await log(runId, "error", msg);
   const run = await db.getRun(runId);
-  if (run) await releaseLocks(run);
+  if (run) await releaseRun(run);
 }
 
-/** Le run est fini (terminé ou abandonné) : les autres PC peuvent reprendre ses tâches. */
-async function releaseLocks(run: Run) {
+/** Le run est fini (terminé ou abandonné) : verrous ClickUp levés, jeton des hooks révoqué. */
+async function releaseRun(run: Run) {
   for (const id of run.task_ids) await lock.release(id);
+  await invoke("revoke_run", { runId: run.id }).catch(() => {});
 }
 
 async function finish(run: Run) {
   await sessions.get(run.id)?.stop();
   sessions.delete(run.id);
   await git.removeWorktree(run.repo_path, run.worktree_path!);
-  await releaseLocks(run);
+  await releaseRun(run);
   await syncKeepAwake();
 }
 
@@ -566,7 +567,7 @@ export async function abandonRun(runId: string) {
   if (run.branch && !run.pushed_commit) await git.deleteLocalBranch(run.repo_path, run.branch);
   await setState(runId, "failed", { error: "Abandonné par l'utilisateur" });
   await restoreStatuses(run);
-  await releaseLocks(run);
+  await releaseRun(run);
 }
 
 export function isLive(runId: string) {

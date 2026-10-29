@@ -18,7 +18,8 @@ const DECISION_TIMEOUT: Duration = Duration::from_secs(590);
 
 struct Hooks {
     port: u16,
-    token: String,
+    /// Un jeton par run : un hook ne peut parler qu'au nom du run pour lequel il a été écrit.
+    tokens: Mutex<HashMap<String, String>>,
     pending: Mutex<HashMap<String, mpsc::Sender<Value>>>,
 }
 
@@ -40,14 +41,24 @@ fn query_param(url: &str, name: &str) -> String {
         .to_string()
 }
 
-/// Serveur HTTP local (127.0.0.1, port aléatoire, jeton) qui reçoit les hooks.
+/// Identifiant du run si l'URL porte le jeton de ce run, sinon None.
+fn authorized_run(tokens: &HashMap<String, String>, url: &str) -> Option<String> {
+    let run_id = query_param(url, "run");
+    let token = query_param(url, "token");
+    match tokens.get(&run_id) {
+        Some(expected) if !token.is_empty() && *expected == token => Some(run_id),
+        _ => None,
+    }
+}
+
+/// Serveur HTTP local (127.0.0.1, port aléatoire, jeton par run) qui reçoit les hooks.
 /// Un `PreToolUse` envoyé avec `decide=1` reste bloqué jusqu'à la décision de l'interface.
 fn start_hook_server(app: AppHandle) -> Arc<Hooks> {
     let server = tiny_http::Server::http("127.0.0.1:0").expect("serveur des hooks");
     let port = server.server_addr().to_ip().expect("adresse IP").port();
     let hooks = Arc::new(Hooks {
         port,
-        token: uuid::Uuid::new_v4().to_string(),
+        tokens: Mutex::new(HashMap::new()),
         pending: Mutex::new(HashMap::new()),
     });
     let shared = hooks.clone();
@@ -57,16 +68,15 @@ fn start_hook_server(app: AppHandle) -> Arc<Hooks> {
             let hooks = shared.clone();
             thread::spawn(move || {
                 let url = req.url().to_string();
-                if query_param(&url, "token") != hooks.token {
+                let Some(run_id) = authorized_run(&hooks.tokens.lock().unwrap(), &url) else {
                     let _ = req.respond(tiny_http::Response::from_string("forbidden").with_status_code(403));
                     return;
-                }
+                };
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
                 let payload: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
                 let event = payload["hook_event_name"].as_str().unwrap_or("unknown").to_string();
                 let blocking = event == "PreToolUse" && query_param(&url, "decide") == "1";
-                let run_id = query_param(&url, "run");
                 let id = uuid::Uuid::new_v4().to_string();
 
                 let reply = if blocking {
@@ -94,11 +104,9 @@ fn start_hook_server(app: AppHandle) -> Arc<Hooks> {
     hooks
 }
 
-fn curl_hook(hooks: &Hooks, run_id: &str, decide: bool) -> Value {
+fn curl_hook(port: u16, token: &str, run_id: &str, decide: bool) -> Value {
     let url = format!(
-        "http://127.0.0.1:{}/hook?token={}&run={run_id}{}",
-        hooks.port,
-        hooks.token,
+        "http://127.0.0.1:{port}/hook?token={token}&run={run_id}{}",
         if decide { "&decide=1" } else { "" }
     );
     json!({
@@ -112,10 +120,14 @@ fn curl_hook(hooks: &Hooks, run_id: &str, decide: bool) -> Value {
 /// La config globale de l'utilisateur n'est jamais modifiée.
 #[tauri::command]
 fn prepare_run_settings(app: AppHandle, hooks: State<Arc<Hooks>>, run_id: String) -> Result<String, String> {
-    let notify = json!([{ "hooks": [curl_hook(&hooks, &run_id, false)] }]);
-    let notify_all = json!([{ "matcher": "*", "hooks": [curl_hook(&hooks, &run_id, false)] }]);
+    // Nouveau jeton à chaque (re)lancement de session : l'ancien fichier de settings ne vaut plus rien.
+    let token = uuid::Uuid::new_v4().to_string();
+    hooks.tokens.lock().unwrap().insert(run_id.clone(), token.clone());
+    let hook = |decide| curl_hook(hooks.port, &token, &run_id, decide);
+    let notify = json!([{ "hooks": [hook(false)] }]);
+    let notify_all = json!([{ "matcher": "*", "hooks": [hook(false)] }]);
     let settings = json!({ "hooks": {
-        "PreToolUse": [{ "matcher": "*", "hooks": [curl_hook(&hooks, &run_id, true)] }],
+        "PreToolUse": [{ "matcher": "*", "hooks": [hook(true)] }],
         "PostToolUse": notify_all,
         "SessionStart": notify,
         "Notification": notify,
@@ -126,6 +138,15 @@ fn prepare_run_settings(app: AppHandle, hooks: State<Arc<Hooks>>, run_id: String
     let path = dir.join(format!("run-{run_id}.settings.json"));
     std::fs::write(&path, settings.to_string()).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Run terminé : son jeton est révoqué et son fichier de settings supprimé.
+#[tauri::command]
+fn revoke_run(app: AppHandle, hooks: State<Arc<Hooks>>, run_id: String) {
+    hooks.tokens.lock().unwrap().remove(&run_id);
+    if let Ok(dir) = app.path().app_cache_dir() {
+        let _ = std::fs::remove_file(dir.join(format!("run-{run_id}.settings.json")));
+    }
 }
 
 #[tauri::command]
@@ -281,6 +302,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             prepare_run_settings,
+            revoke_run,
             resolve_hook,
             secret_set,
             secret_get,
@@ -292,4 +314,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn un_hook_ne_parle_qu_au_nom_de_son_run() {
+        let tokens = HashMap::from([("r1".to_string(), "t1".to_string()), ("r2".to_string(), "t2".to_string())]);
+        assert_eq!(authorized_run(&tokens, "/hook?token=t1&run=r1&decide=1"), Some("r1".into()));
+        assert_eq!(authorized_run(&tokens, "/hook?token=t2&run=r1"), None, "jeton d'un autre run");
+        assert_eq!(authorized_run(&tokens, "/hook?token=t1&run=r9"), None, "run inconnu ou révoqué");
+        assert_eq!(authorized_run(&tokens, "/hook?run=r1"), None, "sans jeton");
+        assert_eq!(authorized_run(&HashMap::new(), "/hook?token=&run="), None, "tout vide");
+    }
 }
