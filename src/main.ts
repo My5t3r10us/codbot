@@ -1,4 +1,5 @@
 // Point d'entrée : navigation entre les vues, bandeau des suggestions de statut (mode manuel).
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as db from "./db";
 import { runChecks } from "./diag";
 import { checkForUpdate } from "./updater";
@@ -16,7 +17,14 @@ const root = document.getElementById("view")!;
 
 async function show(view: View) {
   current = view;
-  for (const b of document.querySelectorAll<HTMLButtonElement>("nav button")) {
+  // Cliquer une notification ramène Codbot au premier plan : on ouvre alors le run concerné
+// (s'il a été notifié dans les 15 dernières minutes).
+void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  const runId = focused ? runs.takeNotifiedRun(15 * 60_000) : null;
+  if (runId) goToRun(runId);
+});
+
+for (const b of document.querySelectorAll<HTMLButtonElement>("nav button")) {
     b.classList.toggle("active", b.dataset.view === view);
   }
   try {

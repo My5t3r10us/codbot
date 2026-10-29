@@ -71,7 +71,18 @@ export async function setQueueActive(active: boolean) {
   await syncKeepAwake();
 }
 
-async function notify(title: string, body: string) {
+/** Dernier run signalé par une notification : ouvert quand l'utilisateur revient dans l'app. */
+let notified: { runId: string; at: number } | null = null;
+
+/** Run de la dernière notification, s'il date de moins de `maxAgeMs` (une seule fois). */
+export function takeNotifiedRun(maxAgeMs: number) {
+  const n = notified;
+  notified = null;
+  return n && Date.now() - n.at <= maxAgeMs ? n.runId : null;
+}
+
+async function notify(title: string, body: string, runId?: string) {
+  if (runId) notified = { runId, at: Date.now() };
   let granted = await isPermissionGranted();
   if (!granted) granted = (await requestPermission()) === "granted";
   if (granted) sendNotification({ title, body });
@@ -261,7 +272,7 @@ async function startSession(run: Run, prompt: string, resume = false) {
         rateLimited.set(run.id, resetsAt);
         void log(run.id, "rate_limit", text);
         const when = resetsAt ? `Reprise vers ${new Date(resetsAt).toLocaleTimeString("fr-FR")}` : text.slice(0, 120);
-        void notify("Codbot : limite d'usage atteinte", when);
+        void notify("Codbot : limite d\'usage atteinte", when, run.id);
         for (const fn of limitListeners) fn(resetsAt);
       },
       onUsage: (usage) => void db.setSetting("last_usage", usage).then(changed),
@@ -310,7 +321,7 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
     await setState(runId, "waiting_reply");
     await log(runId, "info", "aucun commit : l'agent attend sans doute une réponse");
     await syncStatus(run, "blocked");
-    await notify("Codbot : l'agent attend", run.task_names.join(", "));
+    await notify("Codbot : l'agent attend", run.task_names.join(", "), run.id);
     await armReplyTimeout(run, `Question de l'agent :\n${result.text.slice(0, 1200)}`);
     return;
   }
@@ -370,7 +381,7 @@ async function deliverDirect(run: Run, commits: git.Commit[], covered: string[])
   ].join("\n");
   await syncStatus(run, "done", comment, covered);
   await finish(run);
-  await notify("Codbot : poussé", run.task_names.join(", "));
+  await notify("Codbot : poussé", run.task_names.join(", "), run.id);
 }
 
 async function deliverBranch(run: Run, commits: git.Commit[], covered: string[]) {
@@ -410,7 +421,7 @@ async function deliverBranch(run: Run, commits: git.Commit[], covered: string[])
   await sessions.get(run.id)?.stop();
   sessions.delete(run.id);
   await syncKeepAwake();
-  await notify(firstPush ? "Codbot : PR prête à relire" : "Codbot : PR mise à jour", run.task_names.join(", "));
+  await notify(firstPush ? "Codbot : PR prête à relire" : "Codbot : PR mise à jour", run.task_names.join(", "), run.id);
 }
 
 // ---------- surveillance des PR en revue ----------
@@ -434,7 +445,7 @@ async function markMerged(run: Run) {
   await syncStatus(run, "done", `Codbot : ${run.pr_url ? `PR mergée (${run.pr_url})` : `branche ${run.branch} mergée`} dans ${run.base_branch}.`, reviewed);
   await finish(run);
   if (run.branch) await git.deleteLocalBranch(run.repo_path, run.branch);
-  await notify("Codbot : PR mergée", run.task_names.join(", "));
+  await notify("Codbot : PR mergée", run.task_names.join(", "), run.id);
 }
 
 let polling = false;
@@ -481,7 +492,7 @@ async function block(run: Run, reason: string) {
   await setState(run.id, "blocked", { error: reason });
   await log(run.id, "error", reason);
   await syncStatus(run, "blocked", `Codbot : run bloqué.\n\n${reason.slice(0, 1500)}`);
-  await notify("Codbot : run bloqué", run.task_names.join(", "));
+  await notify("Codbot : run bloqué", run.task_names.join(", "), run.id);
 }
 
 async function fail(runId: string, e: unknown) {
@@ -624,7 +635,7 @@ async function onHook(h: HookEvent) {
   setTimeout(async () => {
     if (!permissions.has(p.id)) return;
     await syncStatus(run, "blocked");
-    await notify("Codbot : permission en attente", `${tool} · ${run.task_names.join(", ")}`);
+    await notify("Codbot : permission en attente", `${tool} · ${run.task_names.join(", ")}`, run.id);
   }, BLOCKED_AFTER_MS);
 }
 
