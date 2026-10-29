@@ -4,6 +4,7 @@ import { isPermissionGranted, sendNotification } from "@tauri-apps/plugin-notifi
 import * as cu from "./clickup";
 import * as db from "./db";
 import * as lock from "./lock";
+import { repoAllows } from "./rules";
 import * as runs from "./runs";
 
 const TICK_MS = 15_000;
@@ -131,22 +132,19 @@ async function step() {
   }
 
   // 2. Lancer les éléments suivants, dans l'ordre, en respectant les règles git par repo.
-  const busyRepos = new Set(active.map((r) => r.repo_path));
-  const directRepos = new Set(active.filter((r) => r.git_strategy === "direct-main").map((r) => r.repo_path));
+  const started = [...active];
   for (const item of await db.listQueue()) {
     if (free <= 0) break;
     const project = await db.getProject(item.list_id);
     if (!project?.repo_path) continue;
-    // Un direct-main attend que le repo soit libre ; une branche attend seulement qu'aucun direct-main n'y tourne.
-    if (item.strategy === "direct-main" ? busyRepos.has(project.repo_path) : directRepos.has(project.repo_path)) continue;
+    if (!repoAllows(item.strategy, project.repo_path, started)) continue;
     // Une tâche prise par un autre PC reste dans la file : elle sera relancée quand le verrou tombera.
     const tasks = await Promise.all(item.task_ids.map((id) => cu.getTask(id)));
     if ((await Promise.all(tasks.map((t) => lock.lockedByOther(t)))).some(Boolean)) continue;
     await db.dequeue(item.id);
     changed();
     await runs.launchQueued(item, project, st.sessionId);
-    busyRepos.add(project.repo_path);
-    if (item.strategy === "direct-main") directRepos.add(project.repo_path);
+    started.push({ repo_path: project.repo_path, git_strategy: item.strategy } as db.Run);
     free--;
   }
 

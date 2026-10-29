@@ -1,6 +1,7 @@
 // Session `claude` pilotée en stream-json (validée par le prototype M0).
 import { invoke } from "@tauri-apps/api/core";
 import { Child, Command } from "@tauri-apps/plugin-shell";
+import { rateLimitFrom } from "./rules";
 
 type Json = Record<string, any>;
 
@@ -96,18 +97,9 @@ export class AgentSession {
       this.cb.onLog("init", `modèle ${msg.model}, ${msg.tools?.length ?? 0} outils, ${mcp} MCP connectés`);
       return;
     }
-    if (msg.type === "rate_limit_event") {
-      // Émis à chaque requête : seul un statut autre que « allowed » signale une limite atteinte.
-      const info = msg.rate_limit_info ?? {};
-      if (info.status !== "allowed") {
-        this.cb.onRateLimit({ text: brief(info, 400), resetsAt: info.resetsAt ? Number(info.resetsAt) * 1000 : null });
-      }
-      return;
-    }
-    if (msg.error && /rate_limit|usage_limit/i.test(String(msg.error))) {
-      this.cb.onRateLimit({ text: brief(msg, 400), resetsAt: null });
-      return;
-    }
+    const limit = rateLimitFrom(msg);
+    if (limit) this.cb.onRateLimit(limit);
+    if (msg.type === "rate_limit_event" || (limit && msg.type !== "result")) return;
     switch (msg.type) {
       case "assistant":
         for (const part of msg.message?.content ?? []) {
@@ -122,7 +114,6 @@ export class AgentSession {
         return;
       case "result": {
         const text = String(msg.result ?? "");
-        if (msg.is_error && /limit|quota/i.test(text)) this.cb.onRateLimit({ text, resetsAt: null });
         this.cb.onTurnEnd({ isError: Boolean(msg.is_error), text });
         return;
       }

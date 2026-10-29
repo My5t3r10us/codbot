@@ -11,9 +11,10 @@ import type { GitStrategy, Project, Run, RunMode, RunState, StatusEvent } from "
 import * as gh from "./gh";
 import * as git from "./git";
 import * as lock from "./lock";
+import { ACTIVE_STATES, buildBrief, coveredTasks, fillBrief, strategyRule } from "./rules";
+import type { StrategyChoice } from "./rules";
 
-/** États où un agent travaille (ou va travailler) dans le worktree. */
-export const ACTIVE_STATES: RunState[] = ["preparing", "running", "waiting_permission", "waiting_reply", "pushing"];
+export { ACTIVE_STATES, BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief } from "./rules";
 
 /** Outils sans effet de bord, autorisés sans demander. */
 const SAFE_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "ToolSearch"]);
@@ -22,8 +23,6 @@ const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const BLOCKED_AFTER_MS = 60_000;
 /** Intervalle de vérification des PR en revue. */
 const REVIEW_POLL_MS = 60_000;
-/** Tag ClickUp qui propose direct-main par défaut. */
-const SMALL_TAG = "small";
 
 export type Permission = { id: string; runId: string; tool: string; input: Record<string, unknown>; at: number };
 export type Suggestion = {
@@ -141,73 +140,12 @@ export function dismissSuggestion(id: string) {
 
 // ---------- règle de stratégie git (§5.5 de la spec) ----------
 
-export type StrategyChoice = { forced: GitStrategy | null; suggested: GitStrategy; reason: string };
-
 export async function strategyFor(tasks: cu.CuTask[], project: Project, mode: RunMode): Promise<StrategyChoice> {
-  const busy = (await db.listRuns()).filter((r) => r.repo_path === project.repo_path && ACTIVE_STATES.includes(r.state));
-  if (mode === "separe" && tasks.length > 1) {
-    return { forced: "branche", suggested: "branche", reason: "Plusieurs agents en parallèle : une branche par tâche." };
-  }
-  if (busy.length) {
-    return { forced: "branche", suggested: "branche", reason: `Un run est déjà actif sur ce repo (${busy[0].task_names.join(", ")}).` };
-  }
-  const small = tasks.some((t) => t.tags.some((tag) => tag.name.toLowerCase() === SMALL_TAG));
-  return small
-    ? { forced: null, suggested: "direct-main", reason: `Tag « ${SMALL_TAG} » : commit direct sur ${project.base_branch} proposé.` }
-    : { forced: null, suggested: "branche", reason: "Par défaut : branche et PR (tag « small » pour un commit direct)." };
-}
-
-// ---------- brief ----------
-
-function taskSection(task: cu.CuTask, heading: string) {
-  const lines = [
-    `${heading} ${task.name} [CU-${task.id}]`,
-    `Lien : ${task.url}`,
-    task.tags.length ? `Tags : ${task.tags.map((t) => t.name).join(", ")}` : "",
-    "",
-    "Description :",
-    task.markdown_description?.trim() || task.text_content?.trim() || "(vide)",
-  ];
-  if (task.subtasks?.length) {
-    lines.push("", "Sous-tâches :");
-    for (const st of task.subtasks) lines.push(`- ${st.name} (CU-${st.id}, ${st.status.status})`);
-  }
-  for (const cl of task.checklists ?? []) {
-    lines.push("", `Checklist « ${cl.name} » :`);
-    for (const it of cl.items) lines.push(`- [${it.resolved ? "x" : " "}] ${it.name}`);
-  }
-  return lines;
-}
-
-export function buildBrief(tasks: cu.CuTask[], ctx: { worktree: string; base: string; branch: string | null }) {
-  const where = ctx.branch
-    ? `sur la branche ${ctx.branch}, créée depuis origin/${ctx.base}`
-    : `HEAD détaché, basé sur origin/${ctx.base}`;
-  const lines = [
-    tasks.length > 1
-      ? `Tu travailles sur ${tasks.length} tâches ClickUp liées, dans un worktree git dédié (${where}).`
-      : `Tu travailles sur une tâche ClickUp, dans un worktree git dédié (${where}).`,
-    "",
-  ];
-  tasks.forEach((t, i) => lines.push(...taskSection(t, tasks.length > 1 ? `# Tâche ${i + 1} :` : "#"), ""));
-  lines.push(
-    "## Consignes",
-    `- Travaille uniquement dans ce dossier : ${ctx.worktree}`,
-    tasks.length > 1
-      ? "- Fais au moins un commit par tâche. Chaque message porte l'ID de la tâche qu'il traite : `<type>: <résumé> [CU-<id>]` (type : feat, fix, refactor, docs, test ou chore)."
-      : `- Quand le travail est fini et vérifié, commite avec un message au format \`<type>: <résumé> [CU-${tasks[0].id}]\` (type : feat, fix, refactor, docs, test ou chore).`,
-    "- Ne fais pas de push et ne change pas de branche : Codbot pousse lui-même après tes commits.",
-    "- S'il te manque une information, pose ta question et arrête-toi sans commiter.",
-    "- Termine par un court résumé de ce que tu as fait.",
-  );
-  return lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n");
+  const busy = (await db.listRuns()).find((r) => r.repo_path === project.repo_path && ACTIVE_STATES.includes(r.state));
+  return strategyRule(tasks, mode, busy ?? null, project.base_branch);
 }
 
 // ---------- lancement ----------
-
-/** Repères du brief prévisualisé avant le lancement, remplacés par les vraies valeurs. */
-export const BRIEF_WORKTREE = "(dossier du worktree, créé au lancement)";
-export const BRIEF_BRANCH = "(cu/<id>-<titre>)";
 
 export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: string };
 
@@ -285,7 +223,7 @@ async function launchOne(
     await log(run.id, "git", `worktree ${run.worktree_path} ${run.branch ? `sur la branche ${run.branch}` : "détaché"} depuis origin/${run.base_branch} (${run.base_commit.slice(0, 7)})`);
     const full = fresh;
     const brief = briefOverride
-      ? briefOverride.split(BRIEF_WORKTREE).join(run.worktree_path).split(BRIEF_BRANCH).join(run.branch ?? "")
+      ? fillBrief(briefOverride, run.worktree_path, run.branch)
       : buildBrief(full, { worktree: run.worktree_path, base: run.base_branch, branch: run.branch });
     await startSession(run, brief);
     await syncStatus(run, "started");
@@ -372,12 +310,6 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
   await deliver(run, commits);
 }
 
-/** Tâches couvertes par au moins un commit `[CU-<id>]`. Une tâche seule est couverte par tout commit. */
-function coveredTasks(run: Run, commits: git.Commit[]) {
-  if (run.task_ids.length === 1) return run.task_ids;
-  return run.task_ids.filter((id) => commits.some((c) => c.subject.includes(`CU-${id}`)));
-}
-
 async function verify(run: Run) {
   const project = await db.getProject(run.list_id);
   if (!project?.verify_command) return true;
@@ -389,7 +321,7 @@ async function verify(run: Run) {
 
 async function deliver(run: Run, commits: git.Commit[]) {
   await setState(run.id, "pushing");
-  const covered = coveredTasks(run, commits);
+  const covered = coveredTasks(run.task_ids, commits);
   for (const id of run.task_ids.filter((t) => !covered.includes(t))) {
     await log(run.id, "warn", `aucun commit ne porte l'ID CU-${id} : son statut ne change pas`);
   }

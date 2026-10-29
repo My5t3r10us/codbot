@@ -3,8 +3,18 @@ import { Command } from "@tauri-apps/plugin-shell";
 
 export class GitError extends Error {}
 
+export type GitOutput = { code: number | null; stdout: string; stderr: string };
+type GitExecutor = (args: string[]) => Promise<GitOutput>;
+
+let execute: GitExecutor = (args) => Command.create("git", args).execute();
+
+/** Remplace l'exécution de git (tests d'intégration hors Tauri). */
+export function setGitExecutor(fn: GitExecutor) {
+  execute = fn;
+}
+
 export async function git(cwd: string, ...args: string[]) {
-  const out = await Command.create("git", ["-C", cwd, ...args]).execute();
+  const out = await execute(["-C", cwd, ...args]);
   if (out.code !== 0) throw new GitError(`git ${args.join(" ")} : ${(out.stderr || out.stdout).trim()}`);
   return out.stdout.trim();
 }
