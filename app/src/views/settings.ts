@@ -1,11 +1,85 @@
 // Réglages : jeton ClickUp, espace de travail, mode des statuts, projets (liste ↔ repo) et correspondance des statuts.
 import * as cu from "../clickup";
+import { runChecks } from "../diag";
+import * as lock from "../lock";
+import * as settingsio from "../settingsio";
 import * as db from "../db";
 import { errorBox, h } from "../dom";
+import { DEFAULT_ALLOWLIST } from "../allowlist";
 import * as git from "../git";
 
 export async function renderSettings(root: HTMLElement) {
-  root.replaceChildren(tokenCard(), await workspaceCard(), await modeCard(), await projectsCard());
+  root.replaceChildren(
+    diagCard(),
+    tokenCard(),
+    await workspaceCard(),
+    await pcCard(),
+    await modeCard(),
+    await projectsCard(),
+    shareCard(() => renderSettings(root)),
+  );
+}
+
+function diagCard() {
+  const list = h("ul", {}, h("li", { class: "muted" }, "Vérification…"));
+  const refresh = async () => {
+    const checks = await runChecks();
+    list.replaceChildren(...checks.map((c) => h("li", { class: c.ok ? "ok" : "err" }, `${c.ok ? "OK" : "À corriger"} · ${c.name} : ${c.detail}`)));
+  };
+  void refresh();
+  return h("section", { class: "card" },
+    h("div", { class: "row spread" }, h("h2", {}, "Diagnostic de ce PC"), h("button", { class: "ghost", onclick: refresh }, "Revérifier")),
+    list);
+}
+
+async function pcCard() {
+  const name = await lock.pcName();
+  const input = h("input", { value: name, style: "width: 220px" }) as HTMLInputElement;
+  const tag = h("code", {}, lock.lockTag(name));
+  input.oninput = () => (tag.textContent = lock.lockTag(input.value || name));
+  return h("section", { class: "card" },
+    h("h2", {}, "Ce PC"),
+    h("div", { class: "row" },
+      h("label", {}, "Nom (verrous multi-PC)", input),
+      h("button", { onclick: async () => { await db.setSetting("pc_name", input.value.trim()); await lock.pcName(); } }, "Enregistrer")),
+    h("p", { class: "muted small" }, "Une tâche prise par ce PC reçoit le tag ", tag, " dans ClickUp ; les autres PC la laissent de côté jusqu'à la fin du run."));
+}
+
+function shareCard(rerender: () => void) {
+  const msg = h("p", { class: "small" });
+  const done = (text: string, ok = true) => {
+    msg.textContent = text;
+    msg.className = `small ${ok ? "ok" : "err"}`;
+  };
+  return h("section", { class: "card" },
+    h("h2", {}, "Partager les réglages entre PC"),
+    h("p", { class: "muted small" },
+      "L'export contient l'espace de travail, le mode des statuts, le modèle, la file, les projets (listes, branches, vérification, liste blanche) et la correspondance des statuts. ",
+      "Ni le jeton ClickUp ni les chemins des repos : chaque PC garde les siens."),
+    h("div", { class: "row" },
+      h("button", {
+        onclick: async () => {
+          try {
+            const path = await settingsio.exportToFile();
+            if (path) done(`Exporté dans ${path}`);
+          } catch (e) {
+            done((e as Error).message, false);
+          }
+        },
+      }, "Exporter…"),
+      h("button", {
+        class: "ghost",
+        onclick: async () => {
+          try {
+            const r = await settingsio.importFromFile();
+            if (!r) return;
+            rerender();
+          } catch (e) {
+            done((e as Error).message, false);
+          }
+        },
+      }, "Importer…")),
+    msg);
 }
 
 function tokenCard() {
@@ -105,11 +179,18 @@ async function projectBlock(p: db.Project, rerender: () => void) {
   const repo = h("input", { value: p.repo_path, style: "min-width: 320px" }) as HTMLInputElement;
   const base = h("input", { value: p.base_branch, style: "width: 100px" }) as HTMLInputElement;
   const verify = h("input", { value: p.verify_command ?? "", placeholder: "ex. npm test (optionnel)" }) as HTMLInputElement;
+  const allow = h("textarea", { rows: 6, value: p.allowlist.join("\n"), placeholder: DEFAULT_ALLOWLIST.join("\n") }) as HTMLTextAreaElement;
   const msg = h("span", { class: "small" });
   const save = async () => {
     try {
       await git.git(repo.value.trim(), "rev-parse", "--git-dir");
-      await db.saveProject({ ...p, repo_path: repo.value.trim(), base_branch: base.value.trim() || "main", verify_command: verify.value.trim() || null });
+      await db.saveProject({
+        ...p,
+        repo_path: repo.value.trim(),
+        base_branch: base.value.trim() || "main",
+        verify_command: verify.value.trim() || null,
+        allowlist: allow.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean),
+      });
       msg.textContent = "Enregistré.";
       msg.className = "small ok";
     } catch (e) {
@@ -122,7 +203,7 @@ async function projectBlock(p: db.Project, rerender: () => void) {
     "div",
     { class: "card", style: "margin-top: 10px" },
     h("div", { class: "row spread" },
-      h("b", {}, p.list_name),
+      h("b", {}, p.list_name, p.repo_path ? "" : h("span", { class: "warn small" }, "  · repo local à renseigner sur ce PC")),
       h("button", { class: "ghost", onclick: async () => { await db.deleteProject(p.list_id); rerender(); } }, "Retirer")),
     h("div", { class: "row" },
       h("label", {}, "Repo local", repo),
@@ -130,6 +211,13 @@ async function projectBlock(p: db.Project, rerender: () => void) {
       h("label", {}, "Vérification avant push", verify),
       h("button", { onclick: save }, "Enregistrer"),
       msg),
+    h("h3", {}, "Liste blanche du mode sans surveillance (un motif par ligne, puis Enregistrer)"),
+    h("p", { class: "muted small" },
+      "« Bash(npm test*) » autorise une commande (* = n'importe quoi), « WebFetch » ou « mcp__github__* » un outil. ",
+      "Lecture et modifications dans le worktree sont toujours autorisées ; git push est toujours refusé. Liste vide = liste par défaut."),
+    allow,
+    h("div", { class: "row" },
+      h("button", { class: "ghost", onclick: () => (allow.value = DEFAULT_ALLOWLIST.join("\n")) }, "Remettre la liste par défaut")),
     h("h3", {}, "Correspondance des statuts"),
   );
   try {
@@ -195,6 +283,7 @@ async function addProjectForm(rerender: () => void) {
         repo_path: repo.value.trim(),
         base_branch: base.value.trim() || "main",
         verify_command: null,
+        allowlist: DEFAULT_ALLOWLIST,
       });
       rerender();
     } catch (e) {

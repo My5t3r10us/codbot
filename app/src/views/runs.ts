@@ -4,13 +4,14 @@ import * as db from "../db";
 import { errorBox, fmtDate, h } from "../dom";
 import * as runs from "../runs";
 
-const STATE_LABEL: Record<db.RunState, string> = {
+export const STATE_LABEL: Record<db.RunState, string> = {
   preparing: "préparation",
   running: "en cours",
   waiting_permission: "attend une permission",
   waiting_reply: "attend une réponse",
   pushing: "push en cours",
   in_review: "en revue",
+  paused: "en pause",
   done: "terminé",
   blocked: "bloqué",
   failed: "échec",

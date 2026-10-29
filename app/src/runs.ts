@@ -4,11 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { AgentSession } from "./agent";
+import { DEFAULT_ALLOWLIST, decideUnattended } from "./allowlist";
 import * as cu from "./clickup";
 import * as db from "./db";
 import type { GitStrategy, Project, Run, RunMode, RunState, StatusEvent } from "./db";
 import * as gh from "./gh";
 import * as git from "./git";
+import * as lock from "./lock";
 
 /** États où un agent travaille (ou va travailler) dans le worktree. */
 export const ACTIVE_STATES: RunState[] = ["preparing", "running", "waiting_permission", "waiting_reply", "pushing"];
@@ -36,6 +38,10 @@ export type Suggestion = {
 
 const sessions = new Map<string, AgentSession>();
 const nudged = new Set<string>();
+/** Runs qui ont atteint la limite d'usage pendant le tour en cours → heure de réinitialisation (ms). */
+const rateLimited = new Map<string, number | null>();
+const timeouts = new Map<string, number>();
+let queueActive = false;
 export const permissions = new Map<string, Permission>();
 export const suggestions = new Map<string, Suggestion>();
 
@@ -47,6 +53,17 @@ export function onChange(fn: () => void) {
 }
 function changed() {
   for (const fn of listeners) fn();
+}
+
+const limitListeners = new Set<(resetsAt: number | null) => void>();
+/** Prévient la file quand un agent atteint la limite d'usage de l'abonnement. */
+export function onRateLimitHit(fn: (resetsAt: number | null) => void) {
+  limitListeners.add(fn);
+}
+
+export async function setQueueActive(active: boolean) {
+  queueActive = active;
+  await syncKeepAwake();
 }
 
 async function notify(title: string, body: string) {
@@ -67,9 +84,9 @@ async function setState(runId: string, state: RunState, patch: Parameters<typeof
   changed();
 }
 
-/** L'anti-veille reste actif tant qu'un run travaille. */
+/** L'anti-veille reste actif tant qu'un run travaille ou que la file tourne. */
 async function syncKeepAwake() {
-  const anyActive = [...sessions.values()].some((s) => s.running);
+  const anyActive = queueActive || [...sessions.values()].some((s) => s.running);
   await invoke("keep_awake", { on: anyActive }).catch(() => {});
 }
 
@@ -196,6 +213,7 @@ export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: stri
 
 /** Lance un ou plusieurs runs selon le mode. Renvoie les identifiants créés. */
 export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchOptions) {
+  if (!project.repo_path) throw new Error(`Renseigne le repo local de « ${project.list_name} » dans les Réglages de ce PC.`);
   const rule = await strategyFor(tasks, project, opts.mode);
   const strategy = rule.forced ?? opts.strategy;
   if (!(await git.hasRemote(project.repo_path))) throw new Error(`Le repo ${project.repo_path} n'a pas de remote « origin ».`);
@@ -205,7 +223,27 @@ export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchO
   return ids;
 }
 
-async function launchOne(tasks: cu.CuTask[], project: Project, mode: RunMode, strategy: GitStrategy, briefOverride?: string) {
+/** Lance un élément de la file (la règle de stratégie a été vérifiée par la file). */
+export async function launchQueued(item: db.QueueItem, project: Project, queueSession: string) {
+  const tasks = await Promise.all(item.task_ids.map((id) => cu.getTask(id)));
+  return launchOne(tasks, project, item.mode, item.strategy, item.brief ?? undefined, queueSession);
+}
+
+async function launchOne(
+  tasks: cu.CuTask[],
+  project: Project,
+  mode: RunMode,
+  strategy: GitStrategy,
+  briefOverride?: string,
+  queueSession: string | null = null,
+) {
+  // Tâches relues à jour : verrou d'un autre PC, statut d'origine et brief.
+  const fresh = await Promise.all(tasks.map((t) => cu.getTask(t.id)));
+  for (const t of fresh) {
+    const other = await lock.lockedByOther(t);
+    if (other) throw new Error(`« ${t.name} » est déjà prise par un autre PC (tag ${other}).`);
+  }
+  tasks = fresh;
   // En mode groupé, la branche porte le nom de la tâche parente si elle fait partie du lot.
   const ids = new Set(tasks.map((t) => t.id));
   const lead = tasks.find((t) => tasks.some((o) => o.parent === t.id)) ?? tasks.find((t) => !t.parent || !ids.has(t.parent)) ?? tasks[0];
@@ -231,9 +269,13 @@ async function launchOne(tasks: cu.CuTask[], project: Project, mode: RunMode, st
     error: null,
     created_at: new Date().toISOString(),
     ended_at: null,
+    queue_session: queueSession,
   };
   await db.insertRun(run);
   changed();
+  for (const t of fresh) {
+    await lock.acquire(t).catch((e) => log(run.id, "warn", `verrou ClickUp non posé sur « ${t.name} » : ${(e as Error).message}`));
+  }
   try {
     run.worktree_path = git.worktreePath(project.repo_path, run.id);
     run.base_commit = run.branch
@@ -241,7 +283,7 @@ async function launchOne(tasks: cu.CuTask[], project: Project, mode: RunMode, st
       : await git.createWorktree(project.repo_path, project.base_branch, run.worktree_path);
     await db.updateRun(run.id, { worktree_path: run.worktree_path, base_commit: run.base_commit });
     await log(run.id, "git", `worktree ${run.worktree_path} ${run.branch ? `sur la branche ${run.branch}` : "détaché"} depuis origin/${run.base_branch} (${run.base_commit.slice(0, 7)})`);
-    const full = await Promise.all(tasks.map((t) => cu.getTask(t.id)));
+    const full = fresh;
     const brief = briefOverride
       ? briefOverride.split(BRIEF_WORKTREE).join(run.worktree_path).split(BRIEF_BRANCH).join(run.branch ?? "")
       : buildBrief(full, { worktree: run.worktree_path, base: run.base_branch, branch: run.branch });
@@ -262,9 +304,12 @@ async function startSession(run: Run, prompt: string, resume = false) {
       onSession: (id) => void db.updateRun(run.id, { session_id: id }),
       onLog: (type, text) => void log(run.id, type, text),
       onTurnEnd: (r) => void handleTurnEnd(run.id, r).catch((e) => fail(run.id, e)),
-      onRateLimit: (text) => {
+      onRateLimit: ({ text, resetsAt }) => {
+        rateLimited.set(run.id, resetsAt);
         void log(run.id, "rate_limit", text);
-        void notify("Codbot : limite d'usage", text.slice(0, 120));
+        const when = resetsAt ? `Reprise vers ${new Date(resetsAt).toLocaleTimeString("fr-FR")}` : text.slice(0, 120);
+        void notify("Codbot : limite d'usage atteinte", when);
+        for (const fn of limitListeners) fn(resetsAt);
       },
       onExit: (code) => void onExit(run.id, code),
     },
@@ -293,6 +338,15 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
   await db.updateRun(runId, { summary: result.text });
   run.summary = result.text;
 
+  if (rateLimited.has(runId)) {
+    // Limite d'usage : pause, pas échec. La file (ou l'utilisateur) reprendra la session plus tard.
+    const resetsAt = rateLimited.get(runId);
+    await sessions.get(runId)?.stop();
+    sessions.delete(runId);
+    await setState(runId, "paused");
+    await log(runId, "rate_limit", `run en pause${resetsAt ? ` jusqu'à ${new Date(resetsAt).toLocaleTimeString("fr-FR")}` : ""}`);
+    return;
+  }
   if (result.isError) {
     await block(run, `L'agent a terminé en erreur : ${result.text.slice(0, 500)}`);
     return;
@@ -303,6 +357,7 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
     await log(runId, "info", "aucun commit : l'agent attend sans doute une réponse");
     await syncStatus(run, "blocked");
     await notify("Codbot : l'agent attend", run.task_names.join(", "));
+    await armReplyTimeout(run, `Question de l'agent :\n${result.text.slice(0, 1200)}`);
     return;
   }
   if (await git.isDirty(run.worktree_path)) {
@@ -448,9 +503,33 @@ async function pollReviews() {
   }
 }
 
+// ---------- délai de réponse (runs lancés par la file) ----------
+
+/** Sans réponse dans le délai réglé, le run passe en « Bloqué » et libère sa place dans la file. */
+async function armReplyTimeout(run: Run, question: string) {
+  if (!run.queue_session) return;
+  const minutes = await db.getSetting<number>("question_timeout_min", 10);
+  const since = (await db.getRun(run.id))?.state;
+  window.clearTimeout(timeouts.get(run.id));
+  const timer = window.setTimeout(async () => {
+    timeouts.delete(run.id);
+    const now = await db.getRun(run.id);
+    if (!now || now.state !== since) return;
+    for (const p of [...permissions.values()].filter((x) => x.runId === run.id)) {
+      permissions.delete(p.id);
+      await invoke("resolve_hook", { id: p.id, behavior: "deny", reason: "Pas de réponse dans le délai" });
+    }
+    await block(now, `Pas de réponse en ${minutes} min.\n\n${question}`);
+  }, minutes * 60_000);
+  timeouts.set(run.id, timer);
+}
+
 // ---------- blocages et fin ----------
 
 async function block(run: Run, reason: string) {
+  // Un run bloqué libère sa place : le processus s'arrête, la session reste reprenable.
+  await sessions.get(run.id)?.stop();
+  sessions.delete(run.id);
   await setState(run.id, "blocked", { error: reason });
   await log(run.id, "error", reason);
   await syncStatus(run, "blocked", `Codbot : run bloqué.\n\n${reason.slice(0, 1500)}`);
@@ -463,12 +542,20 @@ async function fail(runId: string, e: unknown) {
   sessions.delete(runId);
   await setState(runId, "failed", { error: msg });
   await log(runId, "error", msg);
+  const run = await db.getRun(runId);
+  if (run) await releaseLocks(run);
+}
+
+/** Le run est fini (terminé ou abandonné) : les autres PC peuvent reprendre ses tâches. */
+async function releaseLocks(run: Run) {
+  for (const id of run.task_ids) await lock.release(id);
 }
 
 async function finish(run: Run) {
   await sessions.get(run.id)?.stop();
   sessions.delete(run.id);
   await git.removeWorktree(run.repo_path, run.worktree_path!);
+  await releaseLocks(run);
   await syncKeepAwake();
 }
 
@@ -477,6 +564,8 @@ async function finish(run: Run) {
 export async function sendMessage(runId: string, text: string) {
   const run = await db.getRun(runId);
   if (!run) return;
+  rateLimited.delete(runId);
+  window.clearTimeout(timeouts.get(runId));
   const session = sessions.get(runId);
   if (session?.running) {
     await session.send(text);
@@ -539,6 +628,7 @@ export async function abandonRun(runId: string) {
   if (run.branch && !run.pushed_commit) await git.deleteLocalBranch(run.repo_path, run.branch);
   await setState(runId, "failed", { error: "Abandonné par l'utilisateur" });
   await restoreStatuses(run);
+  await releaseLocks(run);
 }
 
 export function isLive(runId: string) {
@@ -568,10 +658,20 @@ async function onHook(h: HookEvent) {
     await invoke("resolve_hook", { id: h.id, behavior: run ? "allow" : "deny", reason: run ? "Autorisé par Codbot" : "Run inconnu" });
     return;
   }
+  if (await db.getSetting<boolean>("unattended", false)) {
+    const project = await db.getProject(run.list_id);
+    // Liste vide : liste par défaut (git en local, lecture, npm test/run, node…).
+    const list = project?.allowlist.length ? project.allowlist : DEFAULT_ALLOWLIST;
+    const d = decideUnattended(list, tool, input);
+    await invoke("resolve_hook", { id: h.id, behavior: d.allow ? "allow" : "deny", reason: `Codbot, sans surveillance : ${d.reason}` });
+    await log(run.id, "permission", `${d.allow ? "autorisé" : "refusé"} automatiquement : ${tool} (${d.reason})`);
+    return;
+  }
   const p: Permission = { id: h.id, runId: run.id, tool, input, at: Date.now() };
   permissions.set(p.id, p);
   await setState(run.id, "waiting_permission");
   await log(run.id, "permission", `demande : ${tool} ${JSON.stringify(input).slice(0, 200)}`);
+  await armReplyTimeout(run, `Permission demandée : ${tool} ${JSON.stringify(input).slice(0, 600)}`);
   setTimeout(async () => {
     if (!permissions.has(p.id)) return;
     await syncStatus(run, "blocked");
@@ -583,6 +683,7 @@ export async function decide(permissionId: string, allow: boolean) {
   const p = permissions.get(permissionId);
   if (!p) return;
   permissions.delete(permissionId);
+  window.clearTimeout(timeouts.get(p.runId));
   const ok = await invoke<boolean>("resolve_hook", {
     id: p.id,
     behavior: allow ? "allow" : "deny",
@@ -605,10 +706,12 @@ export async function decide(permissionId: string, allow: boolean) {
 export async function init() {
   await listen<HookEvent>("hook", ({ payload }) => void onHook(payload));
   // Après un redémarrage, aucun processus claude ne survit : les runs actifs deviennent reprenables.
+  // Ceux de la file passent « en pause » : la file les reprendra en priorité.
   for (const run of await db.listRuns()) {
     if (ACTIVE_STATES.includes(run.state)) {
-      await db.updateRun(run.id, { state: "stopped" });
-      await db.addRunEvent(run.id, "info", "Codbot a redémarré : run arrêté, reprise possible");
+      const paused = Boolean(run.queue_session && run.session_id);
+      await db.updateRun(run.id, { state: paused ? "paused" : "stopped" });
+      await db.addRunEvent(run.id, "info", `Codbot a redémarré : run ${paused ? "en pause, repris par la file" : "arrêté, reprise possible"}`);
     }
   }
   void pollReviews();

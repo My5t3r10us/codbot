@@ -79,6 +79,7 @@ tr.sub td:first-child { padding-left: 28px; }
 }
 .state { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); }
 .state.done { color: var(--ok); }
+.state.paused { color: var(--warn); }
 .state.blocked, .state.failed { color: var(--err); }
 .state.waiting_permission, .state.waiting_reply { color: var(--warn); }
 
@@ -101,3 +102,7 @@ pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; margin: 4px
 @media (max-width: 800px) {
   .runs { grid-template-columns: 1fr; }
 }
+
+.queue { padding-left: 22px; display: grid; gap: 6px; }
+.queue li { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; cursor: grab; background: var(--bg); }
+.grip { color: var(--muted); }

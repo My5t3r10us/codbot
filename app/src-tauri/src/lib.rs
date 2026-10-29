@@ -180,6 +180,33 @@ fn keep_awake(state: State<Awake>, on: bool) -> Result<bool, String> {
     Ok(guard.is_some())
 }
 
+/// Nom de ce PC (verrous multi-PC dans ClickUp).
+#[tauri::command]
+fn machine_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "pc".into())
+}
+
+/// Lecture et écriture d'un fichier choisi par l'utilisateur dans une boîte de dialogue (export des réglages).
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_text_file(path: String, content: String) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|e| e.to_string())
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 fn migrations() -> Vec<Migration> {
     vec![
         Migration {
@@ -200,12 +227,21 @@ fn migrations() -> Vec<Migration> {
             kind: MigrationKind::Up,
             sql: include_str!("../migrations/003_initial_status.sql"),
         },
+        Migration {
+            version: 4,
+            description: "file d'attente",
+            kind: MigrationKind::Up,
+            sql: include_str!("../migrations/004_queue.sql"),
+        },
     ]
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Une seule instance par PC : relancer l'app ramène la fenêtre existante (une file ne tourne jamais deux fois).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_http::init())
@@ -227,12 +263,7 @@ pub fn run() {
                 .tooltip("Codbot")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
+                    "show" => show_main(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -252,7 +283,10 @@ pub fn run() {
             secret_set,
             secret_get,
             secret_delete,
-            keep_awake
+            keep_awake,
+            machine_name,
+            read_text_file,
+            write_text_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

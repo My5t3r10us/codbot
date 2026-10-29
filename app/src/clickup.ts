@@ -20,6 +20,7 @@ export type CuTask = {
   url: string;
   parent: string | null;
   list: { id: string; name: string };
+  space: { id: string };
   subtasks?: CuTask[];
   checklists?: { name: string; items: { name: string; resolved: boolean }[] }[];
   due_date: string | null;
@@ -89,3 +90,13 @@ export const setTaskStatus = (taskId: string, status: string) =>
 
 export const addComment = (taskId: string, text: string) =>
   api(`/task/${taskId}/comment`, { method: "POST", body: { comment_text: text, notify_all: false } });
+
+// Tags : servent de verrou entre plusieurs PC (voir lock.ts).
+export const addTag = (taskId: string, tag: string) =>
+  api(`/task/${taskId}/tag/${encodeURIComponent(tag)}`, { method: "POST", body: {} });
+
+export const removeTag = (taskId: string, tag: string) =>
+  api(`/task/${taskId}/tag/${encodeURIComponent(tag)}`, { method: "DELETE" });
+
+export const createSpaceTag = (spaceId: string, name: string) =>
+  api(`/space/${spaceId}/tag`, { method: "POST", body: { tag: { name, tag_fg: "#ffffff", tag_bg: "#4f46e5" } } });

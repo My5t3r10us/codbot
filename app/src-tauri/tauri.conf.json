@@ -26,7 +26,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "shortDescription": "Tâches ClickUp et agents Claude Code",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["French"]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

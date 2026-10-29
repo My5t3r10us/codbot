@@ -1,12 +1,15 @@
 // Point d'entrée : navigation entre les vues, bandeau des suggestions de statut (mode manuel).
 import * as db from "./db";
+import { runChecks } from "./diag";
 import { errorBox, h } from "./dom";
+import * as queue from "./queue";
 import * as runs from "./runs";
+import { renderQueue } from "./views/queue";
 import { renderRuns, selectRun } from "./views/runs";
 import { renderSettings } from "./views/settings";
 import { renderTasks } from "./views/tasks";
 
-type View = "tasks" | "runs" | "settings";
+type View = "tasks" | "runs" | "queue" | "settings";
 let current: View = "tasks";
 const root = document.getElementById("view")!;
 
@@ -18,6 +21,7 @@ async function show(view: View) {
   try {
     if (view === "tasks") await renderTasks(root, goToRun);
     if (view === "runs") await renderRuns(root);
+    if (view === "queue") await renderQueue(root, goToRun);
     if (view === "settings") await renderSettings(root);
   } catch (e) {
     root.replaceChildren(errorBox(e));
@@ -54,14 +58,36 @@ runs.onChange(() => {
     void renderActiveCount();
     // On ne redessine pas pendant une saisie, pour ne pas perdre le texte en cours.
     const typing = document.activeElement?.tagName === "TEXTAREA" || document.activeElement?.tagName === "INPUT";
-    if (current === "runs" && !typing) void show("runs");
+    if ((current === "runs" || current === "queue") && !typing) void show(current);
   }, 300);
 });
+queue.onQueueChange(() => {
+  void renderQueueCount();
+  if (current === "queue") void show("queue");
+});
+
+async function renderQueueCount() {
+  const st = await queue.status();
+  const n = (await db.listQueue()).length;
+  document.getElementById("queue-count")!.textContent = n ? String(n) : st.running ? "▶" : "";
+}
 
 for (const b of document.querySelectorAll<HTMLButtonElement>("nav button")) {
   b.onclick = () => show(b.dataset.view as View);
 }
 
 await runs.init();
+await queue.init();
 await renderActiveCount();
-await show((await db.listProjects()).length ? "tasks" : "settings");
+await renderQueueCount();
+await show((await db.listProjects()).some((p) => p.repo_path) ? "tasks" : "settings");
+
+// Diagnostic au démarrage : un problème (CLI déconnecté, jeton invalide…) se signale sur l'onglet Réglages.
+void runChecks().then((checks) => {
+  const bad = checks.filter((c) => !c.ok);
+  const btn = document.querySelector<HTMLButtonElement>('nav button[data-view="settings"]')!;
+  if (bad.length) {
+    btn.textContent = "Réglages ⚠";
+    btn.title = bad.map((c) => `${c.name} : ${c.detail}`).join("\n");
+  }
+});

@@ -15,7 +15,12 @@ export type Project = {
   repo_path: string;
   base_branch: string;
   verify_command: string | null;
+  /** Motifs autorisés en mode sans surveillance, ex. "Bash(npm test*)", "WebFetch". */
+  allowlist: string[];
 };
+
+type ProjectRow = Omit<Project, "allowlist"> & { allowlist: string };
+const toProject = (r: ProjectRow): Project => ({ ...r, allowlist: JSON.parse(r.allowlist || "[]") });
 
 export type RunState =
   | "preparing"
@@ -24,6 +29,7 @@ export type RunState =
   | "waiting_reply"
   | "pushing"
   | "in_review"
+  | "paused"
   | "done"
   | "blocked"
   | "failed"
@@ -56,6 +62,8 @@ export type Run = {
   error: string | null;
   created_at: string;
   ended_at: string | null;
+  /** Session de file d'attente qui a lancé ce run (null : lancé à la main). */
+  queue_session: string | null;
 };
 
 export type RunEvent = { id: number; run_id: string; type: string; text: string; at: string };
@@ -83,20 +91,20 @@ export async function setSetting(key: string, value: unknown) {
 // ---------- projets ----------
 
 export async function listProjects() {
-  return (await conn()).select<Project[]>("SELECT * FROM projects ORDER BY list_name");
+  return (await (await conn()).select<ProjectRow[]>("SELECT * FROM projects ORDER BY list_name")).map(toProject);
 }
 
 export async function getProject(listId: string) {
-  const rows = await (await conn()).select<Project[]>("SELECT * FROM projects WHERE list_id = $1", [listId]);
-  return rows[0] ?? null;
+  const rows = await (await conn()).select<ProjectRow[]>("SELECT * FROM projects WHERE list_id = $1", [listId]);
+  return rows.length ? toProject(rows[0]) : null;
 }
 
 export async function saveProject(p: Project) {
   await (await conn()).execute(
-    `INSERT INTO projects (list_id, list_name, repo_path, base_branch, verify_command) VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO projects (list_id, list_name, repo_path, base_branch, verify_command, allowlist) VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT(list_id) DO UPDATE SET list_name = excluded.list_name, repo_path = excluded.repo_path,
-       base_branch = excluded.base_branch, verify_command = excluded.verify_command`,
-    [p.list_id, p.list_name, p.repo_path, p.base_branch, p.verify_command],
+       base_branch = excluded.base_branch, verify_command = excluded.verify_command, allowlist = excluded.allowlist`,
+    [p.list_id, p.list_name, p.repo_path, p.base_branch, p.verify_command, JSON.stringify(p.allowlist)],
   );
 }
 
@@ -149,13 +157,13 @@ export async function insertRun(run: Run) {
   await (await conn()).execute(
     `INSERT INTO runs (id, task_ids, task_names, list_id, repo_path, worktree_path, base_branch, git_strategy,
        session_id, state, base_commit, pushed_commit, summary, error, created_at, ended_at, mode, branch, pr_url, task_progress,
-       task_initial_status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+       task_initial_status, queue_session)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
     [
       run.id, JSON.stringify(run.task_ids), JSON.stringify(run.task_names), run.list_id, run.repo_path,
       run.worktree_path, run.base_branch, run.git_strategy, run.session_id, run.state, run.base_commit,
       run.pushed_commit, run.summary, run.error, run.created_at, run.ended_at, run.mode, run.branch, run.pr_url,
-      JSON.stringify(run.task_progress), JSON.stringify(run.task_initial_status),
+      JSON.stringify(run.task_progress), JSON.stringify(run.task_initial_status), run.queue_session,
     ],
   );
 }
@@ -192,4 +200,79 @@ export async function addRunEvent(runId: string, type: string, text: string) {
 
 export async function listRunEvents(runId: string) {
   return (await conn()).select<RunEvent[]>("SELECT * FROM run_events WHERE run_id = $1 ORDER BY id", [runId]);
+}
+
+// ---------- file d'attente ----------
+
+export type QueueItem = {
+  id: string;
+  position: number;
+  list_id: string;
+  task_ids: string[];
+  task_names: string[];
+  mode: RunMode;
+  strategy: GitStrategy;
+  brief: string | null;
+  added_at: string;
+};
+
+type QueueRow = Omit<QueueItem, "task_ids" | "task_names"> & { task_ids: string; task_names: string };
+const toItem = (r: QueueRow): QueueItem => ({ ...r, task_ids: JSON.parse(r.task_ids), task_names: JSON.parse(r.task_names) });
+
+export async function listQueue() {
+  return (await (await conn()).select<QueueRow[]>("SELECT * FROM queue ORDER BY position")).map(toItem);
+}
+
+export async function enqueue(item: Omit<QueueItem, "position" | "added_at">) {
+  const c = await conn();
+  const [{ next }] = await c.select<{ next: number }[]>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM queue");
+  await c.execute(
+    `INSERT INTO queue (id, position, list_id, task_ids, task_names, mode, strategy, brief, added_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [item.id, next, item.list_id, JSON.stringify(item.task_ids), JSON.stringify(item.task_names), item.mode, item.strategy,
+      item.brief, new Date().toISOString()],
+  );
+}
+
+export async function dequeue(id: string) {
+  await (await conn()).execute("DELETE FROM queue WHERE id = $1", [id]);
+}
+
+/** Réécrit les positions dans l'ordre donné. */
+export async function reorderQueue(ids: string[]) {
+  const c = await conn();
+  for (const [i, id] of ids.entries()) await c.execute("UPDATE queue SET position = $1 WHERE id = $2", [i + 1, id]);
+}
+
+export type QueueSession = { id: string; started_at: string; ended_at: string | null };
+
+export async function startQueueSession() {
+  const s: QueueSession = { id: crypto.randomUUID(), started_at: new Date().toISOString(), ended_at: null };
+  await (await conn()).execute("INSERT INTO queue_sessions (id, started_at) VALUES ($1, $2)", [s.id, s.started_at]);
+  return s;
+}
+
+export async function endQueueSession(id: string) {
+  await (await conn()).execute("UPDATE queue_sessions SET ended_at = $1 WHERE id = $2", [new Date().toISOString(), id]);
+}
+
+export async function lastQueueSession() {
+  const rows = await (await conn()).select<QueueSession[]>("SELECT * FROM queue_sessions ORDER BY started_at DESC LIMIT 1");
+  return rows[0] ?? null;
+}
+
+export async function runsOfQueueSession(id: string) {
+  const rows = await (await conn()).select<RunRow[]>("SELECT * FROM runs WHERE queue_session = $1 ORDER BY created_at", [id]);
+  return rows.map(toRun);
+}
+
+export async function getQueueSession(id: string) {
+  const rows = await (await conn()).select<QueueSession[]>("SELECT * FROM queue_sessions WHERE id = $1", [id]);
+  return rows[0] ?? null;
+}
+
+export async function listAllMappings() {
+  return (await conn()).select<{ list_id: string; event: StatusEvent; status: string }[]>(
+    "SELECT list_id, event, status FROM status_mappings ORDER BY list_id, event",
+  );
 }

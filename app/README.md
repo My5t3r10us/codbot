@@ -62,4 +62,44 @@ Le serveur Vite écoute sur le port 1430 (le prototype M0 garde le 1420).
 - **Suivi par tâche** en mode groupé : chaque tâche n'avance que si un commit porte son ID ;
   les autres gardent leur statut, avec un avertissement dans le journal.
 
-Hors M2 (jalons suivants) : file d'attente et mode sans surveillance (M3), multi-PC et installeur (M4).
+## Ce qu'ajoute le M3
+
+- **Onglet File** : « Ajouter à la file » depuis la fenêtre de lancement (le mode séparé crée une
+  entrée par tâche), ordre par glisser-déposer, Démarrer / Arrêter la file.
+- **Concurrence** réglable (2 agents par défaut). La file respecte les règles git par repo : un
+  commit direct attend que le repo soit libre, une branche attend seulement qu'aucun commit direct
+  n'y tourne.
+- **Délai de réponse** (10 min par défaut, runs de la file uniquement) : une question ou une
+  permission sans réponse fait passer le run en « Bloqué » (question dans le commentaire ClickUp),
+  le processus s'arrête et la file continue. La session reste reprenable.
+- **Sans surveillance** : chaque permission est décidée par la liste blanche du projet
+  (Réglages → Projets). Motifs `Bash(npm test*)` ou nom d'outil (`WebFetch`, `mcp__github__*`) ;
+  une commande enchaînée n'est autorisée que si chaque partie l'est ; `git push` est toujours
+  refusé. Liste vide = liste par défaut ([allowlist.ts](src/allowlist.ts)).
+- **Limite d'usage** : le run passe « en pause » au lieu d'échouer, toute la file attend l'heure de
+  réinitialisation donnée par le flux (30 min par défaut), puis reprend d'abord les runs en pause.
+  Après un redémarrage de l'app, les runs de la file en cours sont aussi repris.
+- **Anti-veille** actif tant que la file tourne. **Rapport** de la dernière file (terminés, en
+  revue, bloqués avec la raison, durées, liens PR) et notification à la fin.
+
+## Ce qu'ajoute le M4
+
+- **Verrou multi-PC** : un PC qui prend une tâche lui pose le tag ClickUp `codbot-<nom-du-pc>`
+  (créé dans l'espace au besoin) et le retire quand le run se termine ou est abandonné. Un run
+  bloqué ou en revue garde le verrou. Les autres PC ne peuvent ni cocher ni lancer la tâche, et la
+  file la saute jusqu'à la levée du verrou. « Libérer » (onglet Tâches) retire un verrou périmé,
+  après confirmation.
+- **Ce PC** (Réglages) : nom utilisé pour le verrou, par défaut le nom Windows de la machine.
+- **Partage des réglages** : export / import JSON de l'espace de travail, du mode des statuts, du
+  modèle, des réglages de file, des projets (liste, branche, vérification, liste blanche) et de la
+  correspondance des statuts. Ni le jeton ClickUp ni les chemins des repos : un projet importé
+  attend que son repo local soit renseigné sur le nouveau PC.
+- **Diagnostic** au démarrage (CLI `claude` connecté, `git`, `gh` connecté, jeton ClickUp) : carte
+  dans Réglages, et « Réglages ⚠ » dans la barre si quelque chose est à corriger.
+- **Une seule instance** par PC (relancer l'app ramène la fenêtre existante).
+- **Installeur** : `npm run tauri build` produit
+  `src-tauri\target\release\bundle\nsis\Codbot_<version>_x64-setup.exe` (installation pour
+  l'utilisateur courant, sans droits admin).
+
+Pas encore fait : **mises à jour automatiques** (plugin `updater`). Il faut d'abord décider où
+héberger les mises à jour et générer la clé de signature (voir SPEC, questions ouvertes).

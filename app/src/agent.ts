@@ -8,7 +8,8 @@ export type AgentCallbacks = {
   onSession(sessionId: string): void;
   onLog(type: string, text: string): void;
   onTurnEnd(result: { isError: boolean; text: string }): void;
-  onRateLimit(text: string): void;
+  /** Limite d'usage atteinte ; `resetsAt` en ms quand le flux l'indique. */
+  onRateLimit(info: { text: string; resetsAt: number | null }): void;
   onExit(code: number | null): void;
 };
 
@@ -98,11 +99,13 @@ export class AgentSession {
     if (msg.type === "rate_limit_event") {
       // Émis à chaque requête : seul un statut autre que « allowed » signale une limite atteinte.
       const info = msg.rate_limit_info ?? {};
-      if (info.status !== "allowed") this.cb.onRateLimit(brief(info, 400));
+      if (info.status !== "allowed") {
+        this.cb.onRateLimit({ text: brief(info, 400), resetsAt: info.resetsAt ? Number(info.resetsAt) * 1000 : null });
+      }
       return;
     }
     if (msg.error && /rate_limit|usage_limit/i.test(String(msg.error))) {
-      this.cb.onRateLimit(brief(msg, 400));
+      this.cb.onRateLimit({ text: brief(msg, 400), resetsAt: null });
       return;
     }
     switch (msg.type) {
@@ -119,7 +122,7 @@ export class AgentSession {
         return;
       case "result": {
         const text = String(msg.result ?? "");
-        if (msg.is_error && /limit|quota/i.test(text)) this.cb.onRateLimit(text);
+        if (msg.is_error && /limit|quota/i.test(text)) this.cb.onRateLimit({ text, resetsAt: null });
         this.cb.onTurnEnd({ isError: Boolean(msg.is_error), text });
         return;
       }

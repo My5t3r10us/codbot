@@ -212,11 +212,13 @@ Risque d'usage : les agents en parallèle consomment la même enveloppe que les 
 - **M1. MVP** : vue ClickUp, run sur une tâche, stratégie `direct-main`, statuts auto et manuel avec correspondance, commentaires ClickUp, réglages et jeton.
 - **M2 : validé le 2026-10-29** sur `site_test_cbm` (branche `cu/…`, PR #1 ouverte par `gh`, tâche « a revoir », merge détecté en moins d'une minute, tâche « terminer », worktree et branche locale supprimés). Abandonner un run remet désormais le statut qu'avait chaque tâche au lancement (sauf les tâches déjà terminées).
 - **M2. Multi-tâches et git** : modes séparé et groupé, worktrees, stratégie `branche` + PR + détection du merge.
+- **M3 : codé le 2026-10-29** (liste blanche testée unitairement ; file, délai de réponse et pause sur limite à tester en réel).
 - **M3. File sans surveillance** : file, concurrence, liste blanche, délais, pause sur limite, rapport, anti-veille.
+- **M4 : codé le 2026-10-29** : verrou par tag `codbot-<pc>`, export / import des réglages, diagnostic, instance unique, installeur NSIS. Reste l'updater (hébergement et clé de signature à décider).
 - **M4. Multi-PC et finitions** : verrous ClickUp, export et import des réglages, installeur, reprise après crash.
 
 ## 11. Questions ouvertes
 1. Où héberger les mises à jour (plugin `updater`) : partage réseau, serveur statique interne, ou releases GitHub ?
-2. Le marqueur de verrou multi-PC : champ personnalisé ClickUp (plus propre) ou tag (plus simple) ?
+2. ~~Le marqueur de verrou multi-PC~~ : tranché en M4, tag `codbot-<pc>` (aucune configuration ClickUp ; l'API publique ne permet pas de créer un champ personnalisé). Un verrou périmé se libère à la main.
 3. Faut-il aussi un mode « session interactive » qui ouvre le run dans Claude Code desktop pour reprendre la main ?
 4. Que faire d'un run `direct-main` dont le rebase échoue en conflit : basculer automatiquement sur une branche, ou marquer « Bloqué » ?

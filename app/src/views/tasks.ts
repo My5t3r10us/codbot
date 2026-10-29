@@ -1,16 +1,21 @@
 // Vue des tâches : tâches des listes associées à un repo, sélection multiple et lancement d'agents.
+import { ask } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as cu from "../clickup";
 import * as db from "../db";
 import { errorBox, h } from "../dom";
+import * as lock from "../lock";
+import * as queue from "../queue";
 import * as runs from "../runs";
 
 const filters = { listId: "", search: "", mine: false, closed: false, withSubtasks: true };
 const selected = new Set<string>();
 let me: cu.CuUser | null = null;
+let myTag = "";
 
 export async function renderTasks(root: HTMLElement, goToRun: (id: string) => void) {
-  const projects = await db.listProjects();
+  // Un projet importé d'un autre PC n'est utilisable qu'une fois son repo local renseigné.
+  const projects = (await db.listProjects()).filter((p) => p.repo_path);
   if (!projects.length) {
     root.replaceChildren(h("section", { class: "card" },
       h("p", {}, "Aucun projet configuré. Va dans Réglages pour associer une liste ClickUp à un repo.")));
@@ -54,6 +59,7 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
   async function fill() {
     try {
       me ??= await cu.getUser();
+      myTag = await lock.myLockTag();
       tasks ??= await cu.getListTasks(project.list_id, filters.closed);
       const open = (await db.listRuns()).filter((r) => runs.ACTIVE_STATES.includes(r.state) || ["blocked", "in_review"].includes(r.state));
       body.replaceChildren(table(tasks, open));
@@ -130,6 +136,22 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
               }
             },
           }, "Lancer maintenant"),
+          h("button", {
+            class: "ghost",
+            onclick: async (e: Event) => {
+              const btn = e.target as HTMLButtonElement;
+              btn.disabled = true;
+              try {
+                await queue.add(chosen, project, { mode, strategy, brief: single && briefEdited ? briefBox.value : undefined });
+                selected.clear();
+                dialog.replaceChildren(h("p", { class: "ok" }, `${chosen.length} tâche(s) ajoutée(s) à la file.`));
+                void fill();
+              } catch (err) {
+                btn.disabled = false;
+                btn.after(errorBox(err));
+              }
+            },
+          }, "Ajouter à la file"),
           h("button", { class: "ghost", onclick: () => dialog.replaceChildren() }, "Annuler")),
       );
     }
@@ -153,15 +175,18 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
       h("tr", {}, h("th", {}, ""), h("th", {}, "Tâche"), h("th", {}, "Statut"), h("th", {}, "Assignés"), h("th", {}, "Agent")));
     const row = (t: cu.CuTask, sub: boolean) => {
       const run = open.find((r) => r.task_ids.includes(t.id));
+      const tag = lock.lockOf(t);
+      const otherPc = tag && tag !== myTag ? tag : null;
       const box = h("input", {
         type: "checkbox",
         checked: selected.has(t.id),
-        disabled: Boolean(run),
+        disabled: Boolean(run || otherPc),
         onchange: (e: Event) => {
           const on = (e.target as HTMLInputElement).checked;
           const targets = [t, ...(filters.withSubtasks ? all.filter((c) => c.parent === t.id) : [])];
           for (const x of targets) {
-            if (on && !open.some((r) => r.task_ids.includes(x.id))) selected.add(x.id);
+            const busy = open.some((r) => r.task_ids.includes(x.id)) || (lock.lockOf(x) && lock.lockOf(x) !== myTag);
+            if (on && !busy) selected.add(x.id);
             else if (!on) selected.delete(x.id);
           }
           body.replaceChildren(table(all, open));
@@ -173,7 +198,23 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
         h("td", {}, h("a", { onclick: () => openUrl(t.url) }, t.name), h("span", { class: "muted small" }, `  CU-${t.id}`)),
         h("td", {}, h("span", { class: "pill", style: `background:${t.status.color}` }, t.status.status)),
         h("td", { class: "small" }, t.assignees.map((a) => a.username).join(", ")),
-        h("td", {}, run ? h("a", { onclick: () => goToRun(run.id) }, `run ${run.state}`) : "")));
+        h("td", {}, run
+          ? h("a", { onclick: () => goToRun(run.id) }, `run ${run.state}`)
+          : otherPc
+            ? h("span", { class: "small warn" }, `pris par ${otherPc.slice(lock.LOCK_PREFIX.length)} `,
+                h("a", {
+                  onclick: async () => {
+                    const yes = await ask(
+                      `Libérer « ${t.name} » ? À faire seulement si ${otherPc.slice(lock.LOCK_PREFIX.length)} ne travaille plus dessus (PC éteint, app plantée).`,
+                      { title: "Codbot", kind: "warning" },
+                    );
+                    if (!yes) return;
+                    await lock.release(t.id, otherPc);
+                    tasks = null;
+                    void fill();
+                  },
+                }, "Libérer"))
+            : "")));
     };
     for (const t of roots) {
       row(t, false);
