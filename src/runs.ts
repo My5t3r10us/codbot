@@ -357,8 +357,26 @@ async function deliver(run: Run, commits: git.Commit[]) {
     if (run.git_strategy === "direct-main") await deliverDirect(run, commits, covered);
     else await deliverBranch(run, commits, covered);
   } catch (e) {
+    if (e instanceof git.RebaseConflict && run.git_strategy === "direct-main") {
+      await fallbackToBranch(run, commits, covered).catch((err) => block(run, (err as Error).message));
+      return;
+    }
     await block(run, (e as Error).message);
   }
+}
+
+/**
+ * Conflit entre le travail de l'agent et la branche principale : plutôt que bloquer,
+ * le travail part sur une branche avec une PR, où le conflit se résout à la relecture.
+ */
+async function fallbackToBranch(run: Run, commits: git.Commit[], covered: string[]) {
+  const branch = git.branchName(run.task_ids[0], run.task_names[0]);
+  await git.branchHere(run.worktree_path!, branch);
+  await db.updateRun(run.id, { git_strategy: "branche", branch });
+  run.git_strategy = "branche";
+  run.branch = branch;
+  await log(run.id, "git", `conflit avec ${run.base_branch} : le travail part sur la branche ${branch} avec une PR`);
+  await deliverBranch(run, commits, covered, `Conflit avec ${run.base_branch} lors du commit direct : à résoudre dans cette PR.`);
 }
 
 function commitLines(commits: git.Commit[]) {
@@ -384,7 +402,7 @@ async function deliverDirect(run: Run, commits: git.Commit[], covered: string[])
   await notify("Codbot : poussé", run.task_names.join(", "), run.id);
 }
 
-async function deliverBranch(run: Run, commits: git.Commit[], covered: string[]) {
+async function deliverBranch(run: Run, commits: git.Commit[], covered: string[], note?: string) {
   const sha = await git.pushBranch(run.worktree_path!, run.branch!);
   await log(run.id, "git", `branche ${run.branch} poussée (${sha.slice(0, 7)})`);
   const firstPush = !run.pr_url;
@@ -394,7 +412,10 @@ async function deliverBranch(run: Run, commits: git.Commit[], covered: string[])
       ? `${run.task_names[0]} [CU-${run.task_ids[0]}]`
       : `${run.task_names[0]} (+${run.task_ids.length - 1}) [${run.task_ids.map((id) => `CU-${id}`).join(", ")}]`;
     const tasksMd = run.task_ids.map((id, i) => `- [${run.task_names[i]}](https://app.clickup.com/t/${id}) (CU-${id})`);
-    const body = ["Tâches ClickUp :", ...tasksMd, "", "Résumé de l'agent :", "", run.summary ?? "", "", "_PR ouverte par Codbot._"].join("\n");
+    const body = [
+      ...(note ? [`> ${note}`, ""] : []),
+      "Tâches ClickUp :", ...tasksMd, "", "Résumé de l'agent :", "", run.summary ?? "", "", "_PR ouverte par Codbot._",
+    ].join("\n");
     try {
       prUrl = await gh.createPr(run.repo_path, { base: run.base_branch, head: run.branch!, title: redact(title), body: redact(body) });
       await log(run.id, "git", `PR ouverte : ${prUrl}`);
@@ -411,6 +432,7 @@ async function deliverBranch(run: Run, commits: git.Commit[], covered: string[])
   if (toReview.length) {
     const comment = [
       `Codbot : branche ${run.branch} poussée${prUrl ? ", PR ouverte" : ""}.`,
+      note ?? "",
       prUrl ? prUrl : "",
       "",
       ...commitLines(commits),

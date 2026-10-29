@@ -66,9 +66,17 @@ describe("direct-main", () => {
     await git.git(repo, ...ident, "commit", "-qam", "docs: humain");
     await git.git(repo, "push", "-q", "origin", "main");
 
-    await expect(git.rebaseAndPush(wt, "main")).rejects.toThrow(/Conflit au rebase/);
+    await expect(git.rebaseAndPush(wt, "main")).rejects.toBeInstanceOf(git.RebaseConflict);
     expect(await git.isDirty(wt)).toBe(false);
+
+    // Repli de Codbot : le travail de l'agent part sur une branche, prête pour une PR.
+    const branch = git.branchName("2", "Conflit");
+    await git.branchHere(wt, branch);
+    const sha = await git.pushBranch(wt, branch);
+    expect(await git.git(repo, "ls-remote", "origin", `refs/heads/${branch}`)).toContain(sha);
+    expect(await git.isMergedInto(repo, sha, "main")).toBe(false);
     await git.removeWorktree(repo, wt);
+    await git.deleteLocalBranch(repo, branch);
   });
 });
 

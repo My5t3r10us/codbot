@@ -2,6 +2,8 @@
 import { Command } from "@tauri-apps/plugin-shell";
 
 export class GitError extends Error {}
+/** Le rebase sur la branche principale a échoué en conflit (il a été annulé). */
+export class RebaseConflict extends GitError {}
 
 export type GitOutput = { code: number | null; stdout: string; stderr: string };
 type GitExecutor = (args: string[]) => Promise<GitOutput>;
@@ -78,6 +80,11 @@ export function branchName(taskId: string, title: string) {
   return `cu/${taskId}${slug ? `-${slug}` : ""}`;
 }
 
+/** Crée une branche sur le commit courant du worktree et s'y place (HEAD détaché → branche). */
+export async function branchHere(path: string, branch: string) {
+  await git(path, "switch", "-c", branch);
+}
+
 export async function pushBranch(path: string, branch: string) {
   await git(path, "push", "-u", "origin", `HEAD:refs/heads/${branch}`);
   return git(path, "rev-parse", "HEAD");
@@ -117,7 +124,7 @@ export async function rebaseAndPush(path: string, base: string) {
     await git(path, "rebase", `origin/${base}`);
   } catch (e) {
     await git(path, "rebase", "--abort").catch(() => {});
-    throw new GitError(`Conflit au rebase sur origin/${base} : ${(e as Error).message}`);
+    throw new RebaseConflict(`Conflit au rebase sur origin/${base} : ${(e as Error).message}`);
   }
   await git(path, "push", "origin", `HEAD:${base}`);
   return git(path, "rev-parse", "HEAD");

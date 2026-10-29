@@ -174,7 +174,7 @@ export async function insertRun(run: Run) {
 
 const RUN_FIELDS = [
   "worktree_path", "session_id", "state", "base_commit", "pushed_commit", "summary", "error", "ended_at",
-  "branch", "pr_url", "task_progress",
+  "branch", "pr_url", "task_progress", "git_strategy",
 ] as const;
 type RunPatch = Partial<Pick<Run, (typeof RUN_FIELDS)[number]>>;
 
