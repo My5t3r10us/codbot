@@ -220,5 +220,6 @@ Risque d'usage : les agents en parallèle consomment la même enveloppe que les 
 ## 11. Questions ouvertes
 1. ~~Hébergement des mises à jour~~ : tranché, releases GitHub publiques de `My5t3r10us/codbot`, paquets signés (clé privée dans Infisical).
 2. ~~Le marqueur de verrou multi-PC~~ : tranché en M4, tag `codbot-<pc>` (aucune configuration ClickUp ; l'API publique ne permet pas de créer un champ personnalisé). Un verrou périmé se libère à la main.
-3. Faut-il aussi un mode « session interactive » qui ouvre le run dans Claude Code desktop pour reprendre la main ?
-4. Que faire d'un run `direct-main` dont le rebase échoue en conflit : basculer automatiquement sur une branche, ou marquer « Bloqué » ?
+3. ~~Session interactive~~ : tranché, « Ouvrir dans un terminal » rouvre la session avec `claude --resume` dans le worktree.
+4. ~~Conflit au rebase d'un `direct-main`~~ : tranché, bascule automatique sur une branche avec une PR.
+5. Signature de code de l'exe Windows (alerte SmartScreen) : demande un certificat de signature de code, payant.

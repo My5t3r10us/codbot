@@ -9,8 +9,21 @@ npm install
 npm run tauri dev
 ```
 
-Prérequis : Rust (MSVC), Node, le CLI `claude` connecté à l'abonnement, `git`, `curl`.
-Le serveur Vite écoute sur le port 1430.
+Prérequis : Rust (MSVC), Node 22.5+ (les tests utilisent `node:sqlite`), le CLI `claude` connecté
+à l'abonnement, `git`, `curl`. Le serveur Vite écoute sur le port 1430.
+
+## Tests
+
+```bash
+npm test
+```
+
+- `tests/*.test.ts` (vitest) : règles métier pures (`src/rules.ts` : stratégie git, file, brief,
+  commits, limite et usage, échéances), liste blanche, masquage des secrets, verrou, noms git, et
+  toutes les migrations SQL appliquées sur une base en mémoire.
+- `tests/git.integration.test.ts` : vraies séquences git sur des repos temporaires (commit direct,
+  conflit de rebase et repli sur une branche, branche puis merge).
+- Côté Rust : `cargo test --lib` dans `src-tauri` (jeton de hook par run, arguments du terminal).
 
 ## Premier réglage
 
@@ -100,6 +113,23 @@ Le serveur Vite écoute sur le port 1430.
 - **Installeur** : `npm run tauri build` produit
   `src-tauri\target\release\bundle\nsis\Codbot_<version>_x64-setup.exe` (installation pour
   l'utilisateur courant, sans droits admin).
+
+## Ajouts après le M4
+
+- **Usage de l'abonnement** dans la barre du haut (fenêtres 5 h et 7 j, heures de
+  réinitialisation en infobulle), orange au-delà de 80 %, rouge si une fenêtre est bloquée.
+- **Un jeton de hook par run**, renouvelé à chaque lancement de session et révoqué à la fin du run.
+- **Secrets masqués** ([redact.ts](src/redact.ts)) dans les commentaires ClickUp, les PR et le
+  journal : jetons GitHub, ClickUp, Anthropic, AWS, JWT, clés privées, mots de passe d'URL,
+  affectations `CLE=valeur` dont le nom évoque un secret.
+- **Mode des statuts par run** : automatique ou manuel, choisi au lancement (et pour la file).
+- **Vue Tâches** : « Parcourir… » toute liste de l'espace de travail (consultation seule sans
+  repo), filtre d'échéance, rafraîchissement toutes les 60 s.
+- **Notification → run** : revenir dans l'app après une notification de run ouvre ce run.
+- **Conflit sur la branche principale** : un commit direct en conflit part sur une branche avec
+  une PR (note sur le conflit) au lieu d'être bloqué.
+- **Ouvrir dans un terminal** : la session d'un run se rouvre avec `claude --resume` dans son
+  worktree pour reprendre la main ; « Livrer les commits » livre ensuite le travail fait à la main.
 
 ## Mises à jour automatiques
 
