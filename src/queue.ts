@@ -49,6 +49,7 @@ export async function add(tasks: cu.CuTask[], project: db.Project, opts: runs.La
       mode: opts.mode,
       strategy,
       brief: groups.length === 1 ? (opts.brief ?? null) : null,
+      status_mode: opts.statusMode ?? null,
     });
   }
   changed();

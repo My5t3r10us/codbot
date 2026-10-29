@@ -104,6 +104,7 @@ async function runDetail(run: db.Run, rerender: () => void) {
     h("p", { class: "muted small" },
       run.git_strategy === "branche" ? `branche ${run.branch} → ${run.base_branch}` : `commit direct sur ${run.base_branch}`,
       run.task_ids.length > 1 ? ` · mode ${run.mode === "groupe" ? "groupé" : "séparé"}` : "",
+      run.status_mode ? ` · statuts ${run.status_mode === "auto" ? "automatiques" : "manuels"}` : "",
       ` · ${run.repo_path}`,
       run.worktree_path && (active || run.state === "in_review") ? ` · worktree ${run.worktree_path}` : "",
       run.pushed_commit ? ` · poussé ${run.pushed_commit.slice(0, 7)}` : ""),

@@ -98,8 +98,13 @@ async function syncKeepAwake() {
 // ---------- statuts ClickUp ----------
 
 /** Applique (ou propose, en mode manuel) un événement de statut aux tâches indiquées du run. */
+/** Mode des statuts d'un run : celui choisi au lancement, sinon le réglage global. */
+async function statusModeOf(run: Run) {
+  return run.status_mode ?? (await db.getSetting<db.StatusMode>("status_mode", "auto"));
+}
+
 async function syncStatus(run: Run, event: StatusEvent, comment?: string, taskIds: string[] = run.task_ids) {
-  const mode = await db.getSetting<"auto" | "manual">("status_mode", "auto");
+  const mode = await statusModeOf(run);
   const status = (await db.getMappings(run.list_id))[event];
   for (const taskId of taskIds) {
     const taskName = run.task_names[run.task_ids.indexOf(taskId)] ?? taskId;
@@ -153,7 +158,7 @@ export async function strategyFor(tasks: cu.CuTask[], project: Project, mode: Ru
 
 // ---------- lancement ----------
 
-export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: string };
+export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: string; statusMode?: db.StatusMode };
 
 /** Lance un ou plusieurs runs selon le mode. Renvoie les identifiants créés. */
 export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchOptions) {
@@ -163,14 +168,16 @@ export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchO
   if (!(await git.hasRemote(project.repo_path))) throw new Error(`Le repo ${project.repo_path} n'a pas de remote « origin ».`);
   const groups = opts.mode === "groupe" ? [tasks] : tasks.map((t) => [t]);
   const ids: string[] = [];
-  for (const group of groups) ids.push(await launchOne(group, project, opts.mode, strategy, groups.length === 1 ? opts.brief : undefined));
+  for (const group of groups) {
+    ids.push(await launchOne(group, project, opts.mode, strategy, groups.length === 1 ? opts.brief : undefined, null, opts.statusMode ?? null));
+  }
   return ids;
 }
 
 /** Lance un élément de la file (la règle de stratégie a été vérifiée par la file). */
 export async function launchQueued(item: db.QueueItem, project: Project, queueSession: string) {
   const tasks = await Promise.all(item.task_ids.map((id) => cu.getTask(id)));
-  return launchOne(tasks, project, item.mode, item.strategy, item.brief ?? undefined, queueSession);
+  return launchOne(tasks, project, item.mode, item.strategy, item.brief ?? undefined, queueSession, item.status_mode);
 }
 
 async function launchOne(
@@ -180,6 +187,7 @@ async function launchOne(
   strategy: GitStrategy,
   briefOverride?: string,
   queueSession: string | null = null,
+  statusMode: db.StatusMode | null = null,
 ) {
   // Tâches relues à jour : verrou d'un autre PC, statut d'origine et brief.
   const fresh = await Promise.all(tasks.map((t) => cu.getTask(t.id)));
@@ -214,6 +222,7 @@ async function launchOne(
     created_at: new Date().toISOString(),
     ended_at: null,
     queue_session: queueSession,
+    status_mode: statusMode,
   };
   await db.insertRun(run);
   changed();
@@ -538,7 +547,7 @@ export async function retryDeliver(runId: string) {
 
 /** Remet le statut d'avant le run sur les tâches que le run n'a pas terminées. */
 async function restoreStatuses(run: Run) {
-  const mode = await db.getSetting<"auto" | "manual">("status_mode", "auto");
+  const mode = await statusModeOf(run);
   for (const [i, taskId] of run.task_ids.entries()) {
     const initial = run.task_initial_status[taskId];
     if (!initial || run.task_progress[taskId] === "done") continue;

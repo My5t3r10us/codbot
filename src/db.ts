@@ -36,6 +36,7 @@ export type RunState =
   | "stopped";
 
 export type GitStrategy = "direct-main" | "branche";
+export type StatusMode = "auto" | "manual";
 export type RunMode = "separe" | "groupe";
 
 export type Run = {
@@ -64,6 +65,8 @@ export type Run = {
   ended_at: string | null;
   /** Session de file d'attente qui a lancé ce run (null : lancé à la main). */
   queue_session: string | null;
+  /** Mode des statuts choisi au lancement (null : réglage global). */
+  status_mode: StatusMode | null;
 };
 
 export type RunEvent = { id: number; run_id: string; type: string; text: string; at: string };
@@ -157,13 +160,14 @@ export async function insertRun(run: Run) {
   await (await conn()).execute(
     `INSERT INTO runs (id, task_ids, task_names, list_id, repo_path, worktree_path, base_branch, git_strategy,
        session_id, state, base_commit, pushed_commit, summary, error, created_at, ended_at, mode, branch, pr_url, task_progress,
-       task_initial_status, queue_session)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
+       task_initial_status, queue_session, status_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
     [
       run.id, JSON.stringify(run.task_ids), JSON.stringify(run.task_names), run.list_id, run.repo_path,
       run.worktree_path, run.base_branch, run.git_strategy, run.session_id, run.state, run.base_commit,
       run.pushed_commit, run.summary, run.error, run.created_at, run.ended_at, run.mode, run.branch, run.pr_url,
       JSON.stringify(run.task_progress), JSON.stringify(run.task_initial_status), run.queue_session,
+      run.status_mode,
     ],
   );
 }
@@ -213,6 +217,7 @@ export type QueueItem = {
   mode: RunMode;
   strategy: GitStrategy;
   brief: string | null;
+  status_mode: StatusMode | null;
   added_at: string;
 };
 
@@ -227,10 +232,10 @@ export async function enqueue(item: Omit<QueueItem, "position" | "added_at">) {
   const c = await conn();
   const [{ next }] = await c.select<{ next: number }[]>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM queue");
   await c.execute(
-    `INSERT INTO queue (id, position, list_id, task_ids, task_names, mode, strategy, brief, added_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    `INSERT INTO queue (id, position, list_id, task_ids, task_names, mode, strategy, brief, status_mode, added_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [item.id, next, item.list_id, JSON.stringify(item.task_ids), JSON.stringify(item.task_names), item.mode, item.strategy,
-      item.brief, new Date().toISOString()],
+      item.brief, item.status_mode, new Date().toISOString()],
   );
 }
 

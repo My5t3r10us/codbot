@@ -83,6 +83,7 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
   async function openDialog(chosen: cu.CuTask[]) {
     let mode: db.RunMode = chosen.length > 1 ? "groupe" : "separe";
     let strategy: db.GitStrategy = "branche";
+    let statusMode = await db.getSetting<db.StatusMode>("status_mode", "auto");
     const briefBox = h("textarea", { rows: 12 }) as HTMLTextAreaElement;
     let briefEdited = false;
     briefBox.oninput = () => (briefEdited = true);
@@ -116,6 +117,10 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
           radio("strategy", "branche", strategy, "Branche + PR", (v) => (strategy = v), Boolean(rule.forced)),
           radio("strategy", "direct-main", strategy, `Commit direct sur ${project.base_branch}`, (v) => (strategy = v), Boolean(rule.forced))),
         h("p", { class: "muted small" }, rule.reason),
+        h("div", { class: "row" },
+          h("b", {}, "Statuts ClickUp :"),
+          radio("statusMode", "auto", statusMode, "automatiques", (v) => (statusMode = v)),
+          radio("statusMode", "manual", statusMode, "manuels (je valide chaque changement)", (v) => (statusMode = v))),
         single
           ? h("div", {}, h("h3", {}, "Brief envoyé à l'agent (modifiable)"), briefBox)
           : h("p", { class: "muted small" }, "En mode séparé, chaque agent reçoit le brief de sa tâche."),
@@ -126,7 +131,7 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
               btn.disabled = true;
               btn.textContent = "Lancement…";
               try {
-                const ids = await runs.launch(chosen, project, { mode, strategy, brief: single && briefEdited ? briefBox.value : undefined });
+                const ids = await runs.launch(chosen, project, { mode, strategy, statusMode, brief: single && briefEdited ? briefBox.value : undefined });
                 selected.clear();
                 goToRun(ids[0]);
               } catch (err) {
@@ -142,7 +147,7 @@ export async function renderTasks(root: HTMLElement, goToRun: (id: string) => vo
               const btn = e.target as HTMLButtonElement;
               btn.disabled = true;
               try {
-                await queue.add(chosen, project, { mode, strategy, brief: single && briefEdited ? briefBox.value : undefined });
+                await queue.add(chosen, project, { mode, strategy, statusMode, brief: single && briefEdited ? briefBox.value : undefined });
                 selected.clear();
                 dialog.replaceChildren(h("p", { class: "ok" }, `${chosen.length} tâche(s) ajoutée(s) à la file.`));
                 void fill();

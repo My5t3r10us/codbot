@@ -254,6 +254,12 @@ fn migrations() -> Vec<Migration> {
             kind: MigrationKind::Up,
             sql: include_str!("../migrations/004_queue.sql"),
         },
+        Migration {
+            version: 5,
+            description: "mode des statuts par run",
+            kind: MigrationKind::Up,
+            sql: include_str!("../migrations/005_status_mode.sql"),
+        },
     ]
 }
 
