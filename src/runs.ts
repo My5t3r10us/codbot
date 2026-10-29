@@ -12,7 +12,7 @@ import * as gh from "./gh";
 import * as git from "./git";
 import * as lock from "./lock";
 import { ACTIVE_STATES, buildBrief, coveredTasks, fillBrief, strategyRule } from "./rules";
-import type { StrategyChoice } from "./rules";
+import type { StrategyChoice, Usage } from "./rules";
 
 export { ACTIVE_STATES, BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief } from "./rules";
 
@@ -58,6 +58,11 @@ const limitListeners = new Set<(resetsAt: number | null) => void>();
 /** Prévient la file quand un agent atteint la limite d'usage de l'abonnement. */
 export function onRateLimitHit(fn: (resetsAt: number | null) => void) {
   limitListeners.add(fn);
+}
+
+/** Dernier usage connu de l'abonnement (persisté pour l'afficher dès le démarrage). */
+export async function lastUsage() {
+  return db.getSetting<Usage | null>("last_usage", null);
 }
 
 export async function setQueueActive(active: boolean) {
@@ -249,6 +254,7 @@ async function startSession(run: Run, prompt: string, resume = false) {
         void notify("Codbot : limite d'usage atteinte", when);
         for (const fn of limitListeners) fn(resetsAt);
       },
+      onUsage: (usage) => void db.setSetting("last_usage", usage).then(changed),
       onExit: (code) => void onExit(run.id, code),
     },
     model,

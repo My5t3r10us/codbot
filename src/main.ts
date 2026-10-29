@@ -43,6 +43,21 @@ function renderSuggestions() {
       h("button", { class: "ghost", onclick: () => runs.dismissSuggestion(s.id) }, "Ignorer"))));
 }
 
+/** Usage de l'abonnement dans la barre du haut : orange au-delà de 80 %, rouge si une fenêtre est bloquée. */
+async function renderUsage() {
+  const usage = await runs.lastUsage();
+  const el = document.getElementById("usage")!;
+  if (!usage) return;
+  const time = (ms: number | null) => (ms ? new Date(ms).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "?");
+  el.textContent = "Usage " + usage.windows.map((w) => `${w.name} : ${Math.round(w.utilization * 100)} %`).join(" · ");
+  el.title = [
+    ...usage.windows.map((w) => `${w.name} : réinitialisation ${time(w.resetsAt)}`),
+    `Mis à jour ${new Date(usage.at).toLocaleTimeString("fr-FR")}`,
+  ].join("\n");
+  const max = Math.max(...usage.windows.map((w) => w.utilization));
+  el.className = `usage${usage.windows.some((w) => w.status !== "allowed") ? " err" : max >= 0.8 ? " warn" : ""}`;
+}
+
 async function renderActiveCount() {
   const n = (await db.listRuns()).filter((r) => runs.ACTIVE_STATES.includes(r.state)).length;
   document.getElementById("active-count")!.textContent = n ? String(n) : "";
@@ -57,6 +72,7 @@ runs.onChange(() => {
     pending = false;
     renderSuggestions();
     void renderActiveCount();
+    void renderUsage();
     // On ne redessine pas pendant une saisie, pour ne pas perdre le texte en cours.
     const typing = document.activeElement?.tagName === "TEXTAREA" || document.activeElement?.tagName === "INPUT";
     if ((current === "runs" || current === "queue") && !typing) void show(current);
@@ -81,6 +97,7 @@ await runs.init();
 await queue.init();
 await renderActiveCount();
 await renderQueueCount();
+await renderUsage();
 await show((await db.listProjects()).some((p) => p.repo_path) ? "tasks" : "settings");
 
 // Mise à jour disponible : signalée sur l'onglet Réglages (l'installation se lance depuis Réglages).

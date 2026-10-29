@@ -126,3 +126,22 @@ export function rateLimitFrom(msg: Record<string, any>): RateLimit | null {
   if (msg.type === "result" && msg.is_error && /limit|quota/i.test(String(msg.result))) return { text: String(msg.result), resetsAt: null };
   return null;
 }
+
+// ---------- usage de l'abonnement ----------
+
+export type UsageWindow = { name: string; utilization: number; resetsAt: number | null; status: string };
+export type Usage = { windows: UsageWindow[]; at: number };
+
+const WINDOW_LABELS: Record<string, string> = { five_hour: "5 h", seven_day: "7 j" };
+
+/** Usage par fenêtre (5 h, 7 j…) tiré d'un `rate_limit_event`, utilisation entre 0 et 1. */
+export function usageFrom(msg: Record<string, any>, now = Date.now()): Usage | null {
+  if (msg.type !== "rate_limit_event") return null;
+  const windows = Object.entries<Record<string, any>>(msg.rate_limit_info?.unifiedWindows ?? {}).map(([key, w]) => ({
+    name: WINDOW_LABELS[key] ?? key,
+    utilization: Number(w.utilization ?? 0),
+    resetsAt: w.resetsAt ? Number(w.resetsAt) * 1000 : null,
+    status: String(w.status ?? ""),
+  }));
+  return windows.length ? { windows, at: now } : null;
+}

@@ -1,7 +1,8 @@
 // Session `claude` pilotée en stream-json (validée par le prototype M0).
 import { invoke } from "@tauri-apps/api/core";
 import { Child, Command } from "@tauri-apps/plugin-shell";
-import { rateLimitFrom } from "./rules";
+import { rateLimitFrom, usageFrom } from "./rules";
+import type { Usage } from "./rules";
 
 type Json = Record<string, any>;
 
@@ -11,6 +12,8 @@ export type AgentCallbacks = {
   onTurnEnd(result: { isError: boolean; text: string }): void;
   /** Limite d'usage atteinte ; `resetsAt` en ms quand le flux l'indique. */
   onRateLimit(info: { text: string; resetsAt: number | null }): void;
+  /** Usage de l'abonnement, envoyé par le CLI à chaque requête. */
+  onUsage(usage: Usage): void;
   onExit(code: number | null): void;
 };
 
@@ -97,6 +100,8 @@ export class AgentSession {
       this.cb.onLog("init", `modèle ${msg.model}, ${msg.tools?.length ?? 0} outils, ${mcp} MCP connectés`);
       return;
     }
+    const usage = usageFrom(msg);
+    if (usage) this.cb.onUsage(usage);
     const limit = rateLimitFrom(msg);
     if (limit) this.cb.onRateLimit(limit);
     if (msg.type === "rate_limit_event" || (limit && msg.type !== "result")) return;

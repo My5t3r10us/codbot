@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CuTask } from "../src/clickup";
-import { BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief, coveredTasks, fillBrief, rateLimitFrom, repoAllows, strategyRule } from "../src/rules";
+import { BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief, coveredTasks, fillBrief, rateLimitFrom, repoAllows, strategyRule, usageFrom } from "../src/rules";
 
 const task = (id: string, extra: Partial<CuTask> = {}): CuTask => ({
   id,
@@ -100,5 +100,30 @@ describe("rateLimitFrom", () => {
   it("reconnaît un résultat en erreur de limite", () => {
     expect(rateLimitFrom({ type: "result", is_error: true, result: "Usage limit reached" })?.resetsAt).toBeNull();
     expect(rateLimitFrom({ type: "result", is_error: false, result: "limit" })).toBeNull();
+  });
+});
+
+describe("usageFrom", () => {
+  it("lit les fenêtres d'usage de l'abonnement", () => {
+    const u = usageFrom({
+      type: "rate_limit_event",
+      rate_limit_info: {
+        status: "allowed",
+        unifiedWindows: {
+          five_hour: { utilization: 0, resetsAt: 1793317800, status: "allowed" },
+          seven_day: { utilization: 0.53, resetsAt: 1793422800, status: "allowed" },
+        },
+      },
+    }, 42);
+    expect(u).toEqual({
+      at: 42,
+      windows: [
+        { name: "5 h", utilization: 0, resetsAt: 1793317800000, status: "allowed" },
+        { name: "7 j", utilization: 0.53, resetsAt: 1793422800000, status: "allowed" },
+      ],
+    });
+  });
+  it("ignore les autres messages", () => {
+    expect(usageFrom({ type: "result" })).toBeNull();
   });
 });
