@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Codbot M0</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main>
+      <h1>Codbot M0 <small>prototype du moteur d'agents</small></h1>
+
+      <section class="grid">
+        <div class="card">
+          <h2>Session Claude</h2>
+          <label>Repo de travail <input id="cwd" /></label>
+          <label>Modèle <input id="model" value="haiku" /></label>
+          <label>Routage des permissions
+            <select id="route">
+              <option value="hook">Hook PreToolUse (l'app décide)</option>
+              <option value="stdio">Protocole stdio (control_request)</option>
+            </select>
+          </label>
+          <label>Message <textarea id="prompt" rows="3">Crée un fichier hello.txt qui contient « bonjour », puis lance `git status`.</textarea></label>
+          <div class="row">
+            <button id="start">Démarrer</button>
+            <button id="send" disabled>Envoyer</button>
+            <button id="stop" disabled>Arrêter</button>
+            <button id="resume" disabled>Reprendre (--resume)</button>
+          </div>
+          <p class="status">Session : <code id="session">-</code> · État : <b id="state">inactif</b> · Limite : <b id="ratelimit">-</b></p>
+        </div>
+
+        <div class="card">
+          <h2>Permissions en attente</h2>
+          <ul id="pending"><li class="muted">Aucune</li></ul>
+        </div>
+
+        <div class="card">
+          <h2>Vérifications système</h2>
+          <div class="row">
+            <input id="secret" type="password" placeholder="Jeton de test" />
+            <button id="secret-set">Enregistrer</button>
+            <button id="secret-get">Relire</button>
+            <button id="secret-del">Supprimer</button>
+          </div>
+          <div class="row">
+            <button id="notify">Tester une notification</button>
+            <label class="inline"><input id="awake" type="checkbox" /> Anti-veille</label>
+          </div>
+          <p>Battement 1 s : <b id="ticks">0</b> ticks · écart max <b id="maxgap">0</b> ms · ticks fenêtre cachée <b id="hiddenticks">0</b> · depuis <span id="since"></span></p>
+          <ul id="checks"></ul>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Journal <button id="clear" class="small">Vider</button></h2>
+        <ol id="log"></ol>
+      </section>
+    </main>
+  </body>
+</html>

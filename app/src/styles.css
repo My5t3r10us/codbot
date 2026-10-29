@@ -1,0 +1,103 @@
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --text: #1d2330;
+  --muted: #6b7280;
+  --border: #e3e6eb;
+  --accent: #4f46e5;
+  --accent-text: #ffffff;
+  --ok: #15803d;
+  --warn: #b45309;
+  --err: #b91c1c;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161b;
+    --card: #1c1f26;
+    --text: #e6e8ec;
+    --muted: #9aa1ad;
+    --border: #2c313b;
+    --accent: #8b85ff;
+    --accent-text: #14161b;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --err: #f87171;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); }
+header {
+  display: flex; align-items: center; gap: 24px; padding: 10px 16px;
+  background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2;
+}
+.brand { font-size: 16px; }
+nav { display: flex; gap: 4px; }
+nav button { background: none; color: var(--muted); }
+nav button.active { color: var(--text); background: var(--bg); }
+.count:not(:empty) { background: var(--accent); color: var(--accent-text); border-radius: 9px; padding: 0 6px; font-size: 11px; }
+main { padding: 16px; display: grid; gap: 16px; max-width: 1200px; margin: 0 auto; }
+
+h2 { margin: 0 0 10px; font-size: 15px; }
+h3 { margin: 12px 0 6px; font-size: 13px; color: var(--muted); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spread { justify-content: space-between; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.err { color: var(--err); }
+
+input, select, textarea, button {
+  font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+}
+input[type="checkbox"], input[type="radio"] { padding: 0; }
+textarea { width: 100%; }
+button { cursor: pointer; background: var(--accent); color: var(--accent-text); border: none; }
+button.ghost { background: none; color: var(--accent); border: 1px solid var(--border); }
+button.danger { background: var(--err); color: #fff; }
+button:disabled { opacity: 0.4; cursor: default; }
+label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+label.inline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
+a { color: var(--accent); cursor: pointer; text-decoration: none; }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; }
+th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr.sub td:first-child { padding-left: 28px; }
+
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; color: #fff; white-space: nowrap;
+}
+.state { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--border); }
+.state.done { color: var(--ok); }
+.state.blocked, .state.failed { color: var(--err); }
+.state.waiting_permission, .state.waiting_reply { color: var(--warn); }
+
+#suggestions:empty { display: none; }
+#suggestions { padding: 8px 16px; background: var(--card); border-bottom: 1px solid var(--border); display: grid; gap: 6px; }
+
+.runs { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+.run-item { padding: 8px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.run-item.selected { border-color: var(--accent); }
+.log { max-height: 520px; overflow: auto; font-family: Consolas, monospace; font-size: 12px; display: grid; gap: 2px; }
+.log div { white-space: pre-wrap; word-break: break-word; padding: 2px 0; border-bottom: 1px solid var(--border); }
+.log .t-agent { color: var(--text); }
+.log .t-user { color: var(--accent); }
+.log .t-error, .log .t-tool_error { color: var(--err); }
+.log .t-permission, .log .t-warn, .log .t-rate_limit { color: var(--warn); }
+.log .t-git, .log .t-status { color: var(--ok); }
+.log .t-tool, .log .t-init, .log .t-info, .log .t-stderr { color: var(--muted); }
+pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; margin: 4px 0; max-height: 140px; overflow: auto; }
+
+@media (max-width: 800px) {
+  .runs { grid-template-columns: 1fr; }
+}

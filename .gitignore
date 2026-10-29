@@ -1,0 +1,10 @@
+node_modules/
+dist/
+target/
+**/src-tauri/gen/
+.env*
+!.env.example
+# Repos de test locaux
+m0-sandbox/
+sandbox-origin.git/
+.codbot-worktrees/
