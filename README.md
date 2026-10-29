@@ -1,6 +1,6 @@
-# Codbot (M1)
+# Codbot
 
-Application Tauri v2 qui relie les tâches ClickUp aux agents Claude Code. Voir [SPEC.md](../SPEC.md).
+Application Tauri v2 qui relie les tâches ClickUp aux agents Claude Code. Voir [SPEC.md](SPEC.md).
 
 ## Lancer en développement
 
@@ -10,7 +10,7 @@ npm run tauri dev
 ```
 
 Prérequis : Rust (MSVC), Node, le CLI `claude` connecté à l'abonnement, `git`, `curl`.
-Le serveur Vite écoute sur le port 1430 (le prototype M0 garde le 1420).
+Le serveur Vite écoute sur le port 1430.
 
 ## Premier réglage
 

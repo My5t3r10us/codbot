@@ -207,8 +207,8 @@ Risque d'usage : les agents en parallèle consomment la même enveloppe que les 
 ## 10. Jalons
 
 - **M0. Prototype moteur (quelques jours)** : une app Tauri minimale sous Windows qui lance `claude` sur un repo de test, capte le flux et les hooks, répond à une permission, reprend avec `--resume` et détecte une limite. Elle tourne aussi une longue durée fenêtre cachée, avec l'anti-veille actif. *Critère de passage : H1, H2 et H5 validées.*
-- **M0 : fait le 2026-10-29** (voir [m0/README.md](m0/README.md)). H1 validée ; H5 (veille) et H2 (limite) restent à observer.
-- **M1 : validé de bout en bout le 2026-10-29** sur `site_test_cbm` (run → commit `[CU-…]` → push sur `master` → statut « terminer » et commentaire ClickUp). Le flux contient un `rate_limit_event` à chaque requête, avec `status` et `resetsAt` : la pause sur limite (H2) pourra s'appuyer dessus. Code dans [app/](app/README.md).
+- **M0 : fait le 2026-10-29** (prototype jetable retiré du dépôt ensuite, disponible dans l'historique git, commit `058eaca`). H1 validée ; H5 (veille) et H2 (limite) restent à observer.
+- **M1 : validé de bout en bout le 2026-10-29** sur `site_test_cbm` (run → commit `[CU-…]` → push sur `master` → statut « terminer » et commentaire ClickUp). Le flux contient un `rate_limit_event` à chaque requête, avec `status` et `resetsAt` : la pause sur limite (H2) pourra s'appuyer dessus. Code et mode d'emploi : [README.md](README.md).
 - **M1. MVP** : vue ClickUp, run sur une tâche, stratégie `direct-main`, statuts auto et manuel avec correspondance, commentaires ClickUp, réglages et jeton.
 - **M2 : validé le 2026-10-29** sur `site_test_cbm` (branche `cu/…`, PR #1 ouverte par `gh`, tâche « a revoir », merge détecté en moins d'une minute, tâche « terminer », worktree et branche locale supprimés). Abandonner un run remet désormais le statut qu'avait chaque tâche au lancement (sauf les tâches déjà terminées).
 - **M2. Multi-tâches et git** : modes séparé et groupé, worktrees, stratégie `branche` + PR + détection du merge.
