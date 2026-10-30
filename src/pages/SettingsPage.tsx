@@ -10,6 +10,7 @@ import type { Check } from "../diag";
 import * as git from "../git";
 import * as lock from "../lock";
 import * as mp from "../modelpick";
+import { defaultStatus } from "../rules";
 import * as runs from "../runs";
 import * as settingsio from "../settingsio";
 import { ProjectMark } from "../app/ProjectSwitcher";
@@ -106,7 +107,10 @@ function Row({ label, hint, children }: { label: string; hint?: React.ReactNode;
   );
 }
 
-const selectCls = "h-[34px] w-full rounded-md border border-border bg-card px-2 text-[13.5px] shadow-xs outline-none focus:border-border-strong";
+/** Valeur du choix « Automatique » des correspondances de statuts (aucune ligne en base). */
+const AUTO = "__auto";
+
+const selectCls ="h-[34px] w-full rounded-md border border-border bg-card px-2 text-[13.5px] shadow-xs outline-none focus:border-border-strong";
 
 function Status({ ok, children }: { ok: boolean | null; children: React.ReactNode }) {
   return (
@@ -439,12 +443,13 @@ function ProjectBlock({ project: p }: { project: db.Project }) {
               {!always.data.length && <span className="text-[12.5px] text-muted-foreground">Rien pour l'instant.</span>}
             </div>
           </Row>
-          <Row label="Correspondance des statuts" hint="Statut ClickUp appliqué à chaque étape du run.">
+          <Row label="Correspondance des statuts" hint="Statut ClickUp appliqué à chaque étape du run. « Automatique » le déduit des statuts de la liste.">
             <div className="grid gap-2">
               {db.STATUS_EVENTS.map(({ event, label }) => (
                 <label key={event} className="grid grid-cols-[minmax(0,1fr)_180px] items-center gap-2 text-[12.5px]">
                   <span className="text-muted-foreground">{label}</span>
-                  <select className={selectCls} value={mappings.data[event] ?? ""} onChange={async (e) => { await db.setMapping(p.list_id, event, e.target.value); mappings.reload(); }}>
+                  <select className={selectCls} value={mappings.data[event] ?? AUTO} onChange={async (e) => { await db.setMapping(p.list_id, event, e.target.value === AUTO ? null : e.target.value); mappings.reload(); }}>
+                    <option value={AUTO}>Automatique{(() => { const s = defaultStatus(event, statuses.data); return s ? ` (${s})` : ""; })()}</option>
                     <option value="">(ne rien changer)</option>
                     {statuses.data.map((s) => <option key={s.status} value={s.status}>{s.status}</option>)}
                   </select>

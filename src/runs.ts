@@ -16,7 +16,7 @@ import { SUBAGENT_TOOLS, allowPatternFor, planFromEvents, todosFromToolUse } fro
 import type { Subagent, Todo } from "./live";
 import * as mp from "./modelpick";
 import { redact } from "./redact";
-import { ACTIVE_STATES, buildBrief, coveredTasks, fillBrief, strategyRule } from "./rules";
+import { ACTIVE_STATES, buildBrief, coveredTasks, defaultStatus, fillBrief, strategyRule } from "./rules";
 import type { StrategyChoice, Usage } from "./rules";
 
 export { ACTIVE_STATES, BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief } from "./rules";
@@ -128,7 +128,13 @@ async function statusModeOf(run: Run) {
 
 async function syncStatus(run: Run, event: StatusEvent, comment?: string, taskIds: string[] = run.task_ids) {
   const mode = await statusModeOf(run);
-  const status = (await db.getMappings(run.list_id))[event];
+  const mappings = await db.getMappings(run.list_id);
+  let status = mappings[event];
+  if (status === undefined) {
+    // Pas de réglage pour ce projet : statut déduit des types de statuts de la liste ClickUp.
+    status = defaultStatus(event, await cu.getList(run.list_id).then((l) => l.statuses).catch(() => [])) ?? undefined;
+  }
+  status ||= undefined;
   for (const taskId of taskIds) {
     const taskName = run.task_names[run.task_ids.indexOf(taskId)] ?? taskId;
     const s: Suggestion = { id: crypto.randomUUID(), runId: run.id, taskId, taskName, event, status, comment };

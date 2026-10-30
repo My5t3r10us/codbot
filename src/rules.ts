@@ -108,6 +108,28 @@ export function coveredTasks(taskIds: string[], commits: { subject: string }[]) 
   return taskIds.filter((id) => commits.some((c) => c.subject.includes(`CU-${id}`)));
 }
 
+// ---------- statut ClickUp par défaut ----------
+
+const REVIEW_RE = /review|revue|revoir|relecture/i;
+const IN_PROGRESS_RE = /cours|progress|doing|wip/i;
+const NOT_IN_PROGRESS_RE = /review|revue|revoir|relecture|valid|test|qa|bloqu|block|attente|wait|pause|to ?do|faire|backlog|bug/i;
+
+/**
+ * Statut appliqué quand le projet n'a pas de correspondance pour cet événement, déduit du type
+ * des statuts de la liste (open, custom, done, closed). Null : ne rien changer.
+ */
+export function defaultStatus(event: "started" | "blocked" | "review" | "done", statuses: { status: string; type: string; orderindex: number }[]) {
+  const sorted = [...statuses].sort((a, b) => a.orderindex - b.orderindex);
+  const custom = sorted.filter((s) => s.type === "custom");
+  const pick = (s?: { status: string }) => s?.status ?? null;
+  switch (event) {
+    case "started": return pick(custom.find((s) => IN_PROGRESS_RE.test(s.status)) ?? custom.find((s) => !NOT_IN_PROGRESS_RE.test(s.status)));
+    case "review": return pick(custom.find((s) => REVIEW_RE.test(s.status)));
+    case "done": return pick(sorted.find((s) => s.type === "done") ?? sorted.find((s) => s.type === "closed"));
+    case "blocked": return null;
+  }
+}
+
 // ---------- limite d'usage ----------
 
 export type RateLimit = { text: string; resetsAt: number | null };

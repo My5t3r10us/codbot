@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CuTask } from "../src/clickup";
-import { BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief, coveredTasks, fillBrief, matchesDue, rateLimitFrom, repoAllows, strategyRule, usageFrom } from "../src/rules";
+import { BRIEF_BRANCH, BRIEF_WORKTREE, buildBrief, coveredTasks, defaultStatus, fillBrief, matchesDue, rateLimitFrom, repoAllows, strategyRule, usageFrom } from "../src/rules";
 
 const task = (id: string, extra: Partial<CuTask> = {}): CuTask => ({
   id,
@@ -86,6 +86,42 @@ describe("coveredTasks", () => {
   });
   it("en lot, seules les tâches citées sont couvertes", () => {
     expect(coveredTasks(["a", "b"], [{ subject: "feat: x [CU-b]" }])).toEqual(["b"]);
+  });
+});
+
+describe("defaultStatus", () => {
+  const statuses = [
+    { status: "to do", type: "open", orderindex: 0 },
+    { status: "in progress", type: "custom", orderindex: 1 },
+    { status: "en revue", type: "custom", orderindex: 2 },
+    { status: "complete", type: "done", orderindex: 3 },
+    { status: "closed", type: "closed", orderindex: 4 },
+  ];
+  it("déduit le statut de chaque étape du type des statuts de la liste", () => {
+    expect(defaultStatus("started", statuses)).toBe("in progress");
+    expect(defaultStatus("review", statuses)).toBe("en revue");
+    expect(defaultStatus("done", statuses)).toBe("complete");
+    expect(defaultStatus("blocked", statuses)).toBeNull();
+  });
+  it("ignore « to do » ou « bug » de type custom et reconnaît « a revoir »", () => {
+    const list = [
+      { status: "backlog", type: "open", orderindex: 0 },
+      { status: "to do", type: "custom", orderindex: 1 },
+      { status: "en cours", type: "custom", orderindex: 2 },
+      { status: "bug", type: "custom", orderindex: 3 },
+      { status: "a revoir", type: "custom", orderindex: 4 },
+      { status: "terminer", type: "done", orderindex: 6 },
+      { status: "archives", type: "closed", orderindex: 7 },
+    ];
+    expect(defaultStatus("started", list)).toBe("en cours");
+    expect(defaultStatus("review", list)).toBe("a revoir");
+    expect(defaultStatus("done", list)).toBe("terminer");
+  });
+  it("se rabat sur le statut fermé, et ne change rien sans statut adapté", () => {
+    const simple = [{ status: "to do", type: "open", orderindex: 0 }, { status: "closed", type: "closed", orderindex: 1 }];
+    expect(defaultStatus("done", simple)).toBe("closed");
+    expect(defaultStatus("started", simple)).toBeNull();
+    expect(defaultStatus("review", simple)).toBeNull();
   });
 });
 

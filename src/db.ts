@@ -130,9 +130,13 @@ export async function getMappings(listId: string): Promise<Partial<Record<Status
   return Object.fromEntries(rows.map((r) => [r.event, r.status]));
 }
 
-export async function setMapping(listId: string, event: StatusEvent, status: string) {
+/**
+ * `null` : statut par défaut déduit de la liste ClickUp. `""` : ne rien changer (gardé tel quel en base,
+ * pour le distinguer de l'absence de réglage).
+ */
+export async function setMapping(listId: string, event: StatusEvent, status: string | null) {
   const c = await conn();
-  if (!status) {
+  if (status === null) {
     await c.execute("DELETE FROM status_mappings WHERE list_id = $1 AND event = $2", [listId, event]);
     return;
   }
