@@ -114,12 +114,13 @@ export type RateLimit = { text: string; resetsAt: number | null };
 
 /**
  * Message du flux stream-json qui signale une limite atteinte, ou null.
- * Le flux émet un `rate_limit_event` à chaque requête : seul un statut autre que « allowed » compte.
+ * Le flux émet un `rate_limit_event` à chaque requête : seul « rejected » compte.
+ * « allowed_warning » signale seulement qu'un seuil d'usage est franchi : la requête passe.
  */
 export function rateLimitFrom(msg: Record<string, any>): RateLimit | null {
   if (msg.type === "rate_limit_event") {
     const info = msg.rate_limit_info ?? {};
-    if (info.status === "allowed") return null;
+    if (String(info.status ?? "allowed").startsWith("allowed")) return null;
     return { text: JSON.stringify(info).slice(0, 400), resetsAt: info.resetsAt ? Number(info.resetsAt) * 1000 : null };
   }
   if (msg.error && /rate_limit|usage_limit/i.test(String(msg.error))) return { text: JSON.stringify(msg).slice(0, 400), resetsAt: null };

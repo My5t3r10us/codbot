@@ -93,6 +93,10 @@ describe("rateLimitFrom", () => {
   it("ignore l'événement émis à chaque requête quand tout va bien", () => {
     expect(rateLimitFrom({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1 } })).toBeNull();
   });
+  it("ignore l'avertissement de seuil d'usage, qui ne bloque pas la requête", () => {
+    const info = { status: "allowed_warning", resetsAt: 1793422800, utilization: 0.82, overageStatus: "rejected" };
+    expect(rateLimitFrom({ type: "rate_limit_event", rate_limit_info: info })).toBeNull();
+  });
   it("donne l'heure de réinitialisation en ms", () => {
     const r = rateLimitFrom({ type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1793317800 } });
     expect(r?.resetsAt).toBe(1793317800000);
