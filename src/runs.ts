@@ -11,6 +11,8 @@ import type { GitStrategy, Project, Run, RunMode, RunState, StatusEvent } from "
 import * as gh from "./gh";
 import * as git from "./git";
 import * as lock from "./lock";
+import { SUBAGENT_TOOLS, allowPatternFor, planFromEvents, todosFromToolUse } from "./live";
+import type { Subagent, Todo } from "./live";
 import { redact } from "./redact";
 import { ACTIVE_STATES, buildBrief, coveredTasks, fillBrief, strategyRule } from "./rules";
 import type { StrategyChoice, Usage } from "./rules";
@@ -44,6 +46,14 @@ const timeouts = new Map<string, number>();
 let queueActive = false;
 export const permissions = new Map<string, Permission>();
 export const suggestions = new Map<string, Suggestion>();
+/** Plan courant de l'agent (TodoWrite / TaskCreate / TaskUpdate), par run. */
+const plans = new Map<string, Todo[]>();
+/** Sous-agents en cours, par run ; `activity` garde le dernier outil appelé par chacun. */
+const subagents = new Map<string, Map<string, Subagent>>();
+const subActivity = new Map<string, string>();
+/** Consignes mises en file par l'utilisateur, livrées à l'agent à l'étape suivante. */
+export type Steer = { id: string; text: string; at: number };
+const steers = new Map<string, Steer[]>();
 
 // ---------- abonnements de l'interface ----------
 
@@ -128,7 +138,8 @@ async function syncStatus(run: Run, event: StatusEvent, comment?: string, taskId
       await log(run.id, "status", `suggestion pour « ${taskName} » : ${status ? `passer en « ${status} »` : "commentaire"}`);
     }
   }
-  await db.updateRun(run.id, { task_progress: run.task_progress });
+  // « blocked » ne fait pas avancer les tâches : pas d'écriture, qui remettrait un `run` périmé par-dessus.
+  if (event !== "blocked") await db.updateRun(run.id, { task_progress: run.task_progress });
   changed();
 }
 
@@ -261,6 +272,8 @@ async function launchOne(
 
 async function startSession(run: Run, prompt: string, resume = false) {
   const model = (await db.getSetting<string>("model", "")).trim() || null;
+  // Plan connu avant une reprise : la suite des TaskUpdate s'y applique.
+  if (!plans.has(run.id)) plans.set(run.id, planFromEvents(await db.listRunEvents(run.id)).map(({ content, status, activeForm }) => ({ content, status, activeForm })));
   const session = new AgentSession(
     run.id,
     run.worktree_path!,
@@ -277,16 +290,132 @@ async function startSession(run: Run, prompt: string, resume = false) {
       },
       onUsage: (usage) => void db.setSetting("last_usage", usage).then(changed),
       onExit: (code) => void onExit(run.id, code),
+      onToolUse: (tool) => void onToolUse(run.id, tool),
+      onToolResult: (r) => void onToolResult(run.id, r.toolUseId, r.isError),
     },
     model,
   );
   sessions.set(run.id, session);
   await setState(run.id, "running");
-  await session.start(prompt, resume ? run.session_id : null);
+  try {
+    await session.start(prompt, resume ? run.session_id : null);
+  } catch (e) {
+    // Sans processus, le run ne doit pas rester « en cours » : il occuperait une place de la file pour toujours.
+    sessions.delete(run.id);
+    await setState(run.id, "stopped", { error: e instanceof Error ? e.message : String(e) });
+    throw e;
+  }
+}
+
+// ---------- plan, sous-agents et consignes en file ----------
+
+async function onToolUse(runId: string, tool: { id: string; name: string; input: Record<string, any>; parentId: string | null }) {
+  if (tool.parentId) {
+    subActivity.set(tool.parentId, `${tool.name} ${String(tool.input.file_path ?? tool.input.command ?? tool.input.pattern ?? tool.input.description ?? "").slice(0, 80)}`.trim());
+    changed();
+    return;
+  }
+  const before = plans.get(runId) ?? [];
+  const next = todosFromToolUse(tool.name, tool.input, before);
+  if (next) {
+    plans.set(runId, next);
+    await log(runId, "todos", JSON.stringify(next));
+    // Une étape vient de se terminer : c'est le moment de livrer les consignes en file.
+    const done = (t: Todo[]) => t.filter((x) => x.status === "completed").length;
+    if (done(next) > done(before)) await flushSteers(runId);
+  }
+  if (SUBAGENT_TOOLS.has(tool.name) && tool.id) {
+    const s: Subagent = {
+      id: tool.id,
+      type: String(tool.input.subagent_type ?? "general-purpose"),
+      description: String(tool.input.description ?? tool.input.prompt ?? "").slice(0, 160),
+      status: "running",
+      startedAt: Date.now(),
+      endedAt: null,
+    };
+    if (!subagents.has(runId)) subagents.set(runId, new Map());
+    subagents.get(runId)!.set(s.id, s);
+    await log(runId, "subagent", JSON.stringify(s));
+  }
+}
+
+async function onToolResult(runId: string, toolUseId: string, isError: boolean) {
+  const s = subagents.get(runId)?.get(toolUseId);
+  if (!s || s.status !== "running") return;
+  s.status = isError ? "error" : "done";
+  s.endedAt = Date.now();
+  subActivity.delete(toolUseId);
+  await log(runId, "subagent", JSON.stringify(s));
+}
+
+/** Dernier outil appelé par un sous-agent en cours (mémoire seulement). */
+export function subagentActivity(toolUseId: string) {
+  return subActivity.get(toolUseId) ?? null;
+}
+
+export function steerList(runId: string) {
+  return steers.get(runId) ?? [];
+}
+
+/** Met une consigne en file : elle part quand l'agent termine son étape (ou son tour). */
+export async function queueSteer(runId: string, text: string) {
+  const list = [...steerList(runId), { id: crypto.randomUUID(), text, at: Date.now() }];
+  steers.set(runId, list);
+  await log(runId, "steer", `consigne en file : ${text}`);
+}
+
+export function removeSteer(runId: string, id: string) {
+  steers.set(runId, steerList(runId).filter((s) => s.id !== id));
+  changed();
+}
+
+/** Envoie tout de suite une consigne de la file. */
+export async function steerNow(runId: string, id: string) {
+  const s = steerList(runId).find((x) => x.id === id);
+  if (!s) return;
+  removeSteer(runId, id);
+  await sendMessage(runId, s.text);
+}
+
+async function flushSteers(runId: string) {
+  const list = steerList(runId);
+  const session = sessions.get(runId);
+  if (!list.length || !session?.running) return false;
+  steers.delete(runId);
+  await session.send(list.map((s) => s.text).join("\n\n"));
+  return true;
+}
+
+// ---------- autorisations permanentes (mode surveillé) ----------
+
+const alwaysKey = (listId: string) => `always_allow:${listId}`;
+
+/** Motifs autorisés sans demander pour ce projet, même en mode surveillé. */
+export async function alwaysAllowList(listId: string) {
+  return db.getSetting<string[]>(alwaysKey(listId), []);
+}
+
+export async function setAlwaysAllowList(listId: string, patterns: string[]) {
+  await db.setSetting(alwaysKey(listId), patterns);
+}
+
+/** Autorise la demande et retient le motif pour les prochaines fois sur ce projet. */
+export async function decideAndRemember(permissionId: string) {
+  const p = permissions.get(permissionId);
+  if (!p) return null;
+  const run = await db.getRun(p.runId);
+  const pattern = allowPatternFor(p.tool, p.input);
+  if (run) {
+    const list = await alwaysAllowList(run.list_id);
+    if (!list.includes(pattern)) await setAlwaysAllowList(run.list_id, [...list, pattern]);
+  }
+  await decide(permissionId, true);
+  return pattern;
 }
 
 async function onExit(runId: string, code: number | null) {
   sessions.delete(runId);
+  await dropPending(runId);
   await syncKeepAwake();
   const run = await db.getRun(runId);
   if (run && ["running", "waiting_permission"].includes(run.state)) {
@@ -316,6 +445,11 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
     await block(run, `L'agent a terminé en erreur : ${result.text.slice(0, 500)}`);
     return;
   }
+  // Des consignes attendaient la fin de l'étape : l'agent continue avec elles.
+  if (await flushSteers(runId)) {
+    await setState(runId, "running");
+    return;
+  }
   const commits = await git.commitsSince(run.worktree_path, run.base_commit);
   if (commits.length === 0) {
     await setState(runId, "waiting_reply");
@@ -334,6 +468,8 @@ async function handleTurnEnd(runId: string, result: { isError: boolean; text: st
     await block(run, "Des modifications restent non commitées après relance.");
     return;
   }
+  // Worktree propre : une prochaine correction (pendant la revue) aura droit à sa propre relance.
+  nudged.delete(runId);
   await deliver(run, commits);
 }
 
@@ -496,13 +632,23 @@ async function armReplyTimeout(run: Run, question: string) {
     timeouts.delete(run.id);
     const now = await db.getRun(run.id);
     if (!now || now.state !== since) return;
-    for (const p of [...permissions.values()].filter((x) => x.runId === run.id)) {
-      permissions.delete(p.id);
-      await invoke("resolve_hook", { id: p.id, behavior: "deny", reason: "Pas de réponse dans le délai" });
-    }
+    await dropPending(run.id, "Pas de réponse dans le délai");
     await block(now, `Pas de réponse en ${minutes} min.\n\n${question}`);
   }, minutes * 60_000);
   timeouts.set(run.id, timer);
+}
+
+/**
+ * Le run cesse d'attendre l'utilisateur : délai de réponse annulé, permissions en attente refusées.
+ * Sinon une permission restée affichée pourrait « autoriser » un run arrêté et le repasser « en cours ».
+ */
+async function dropPending(runId: string, reason = "Run arrêté") {
+  window.clearTimeout(timeouts.get(runId));
+  timeouts.delete(runId);
+  for (const p of [...permissions.values()].filter((x) => x.runId === runId)) {
+    permissions.delete(p.id);
+    await invoke("resolve_hook", { id: p.id, behavior: "deny", reason }).catch(() => {});
+  }
 }
 
 // ---------- blocages et fin ----------
@@ -511,6 +657,7 @@ async function block(run: Run, reason: string) {
   // Un run bloqué libère sa place : le processus s'arrête, la session reste reprenable.
   await sessions.get(run.id)?.stop();
   sessions.delete(run.id);
+  await dropPending(run.id);
   await setState(run.id, "blocked", { error: reason });
   await log(run.id, "error", reason);
   await syncStatus(run, "blocked", `Codbot : run bloqué.\n\n${reason.slice(0, 1500)}`);
@@ -521,6 +668,7 @@ async function fail(runId: string, e: unknown) {
   const msg = e instanceof Error ? e.message : String(e);
   await sessions.get(runId)?.stop();
   sessions.delete(runId);
+  await dropPending(runId);
   await setState(runId, "failed", { error: msg });
   await log(runId, "error", msg);
   const run = await db.getRun(runId);
@@ -543,11 +691,15 @@ async function finish(run: Run) {
 
 // ---------- actions de l'utilisateur ----------
 
+/** États d'où un message relance le travail (les tâches repassent alors « en cours »). */
+const RESUMED_FROM: RunState[] = ["waiting_permission", "waiting_reply", "blocked", "stopped", "paused"];
+
 export async function sendMessage(runId: string, text: string) {
   const run = await db.getRun(runId);
   if (!run) return;
   rateLimited.delete(runId);
   window.clearTimeout(timeouts.get(runId));
+  timeouts.delete(runId);
   const session = sessions.get(runId);
   if (session?.running) {
     await session.send(text);
@@ -555,8 +707,9 @@ export async function sendMessage(runId: string, text: string) {
   } else {
     await startSession(run, text, Boolean(run.session_id));
   }
-  // Une demande de correction pendant la revue ne fait pas repasser les tâches « en cours ».
-  if (run.state !== "in_review") await syncStatus(run, "started");
+  // Les tâches ne repassent « en cours » que si le run attendait ou était arrêté : pas pour une consigne
+  // envoyée en plein travail (un aller-retour ClickUp par message), ni pour une correction pendant la revue.
+  if (RESUMED_FROM.includes(run.state)) await syncStatus(run, "started");
 }
 
 export async function resumeRun(runId: string) {
@@ -566,6 +719,7 @@ export async function resumeRun(runId: string) {
 export async function stopRun(runId: string) {
   await sessions.get(runId)?.stop();
   sessions.delete(runId);
+  await dropPending(runId);
   await setState(runId, "stopped");
 }
 
@@ -605,6 +759,7 @@ export async function abandonRun(runId: string) {
   for (const s of [...suggestions.values()]) if (s.runId === runId) suggestions.delete(s.id);
   await sessions.get(runId)?.stop();
   sessions.delete(runId);
+  await dropPending(runId);
   if (run.worktree_path) await git.removeWorktree(run.repo_path, run.worktree_path);
   // Une branche jamais poussée n'existe que localement : on la supprime avec le worktree.
   if (run.branch && !run.pushed_commit) await git.deleteLocalBranch(run.repo_path, run.branch);
@@ -653,6 +808,12 @@ async function onHook(h: HookEvent) {
     await invoke("resolve_hook", { id: h.id, behavior: run ? "allow" : "deny", reason: run ? "Autorisé par Codbot" : "Run inconnu" });
     return;
   }
+  const always = await alwaysAllowList(run.list_id);
+  if (always.length && decideUnattended(always, tool, input).allow) {
+    await invoke("resolve_hook", { id: h.id, behavior: "allow", reason: "Autorisation permanente du projet" });
+    await log(run.id, "permission", `autorisé (autorisation permanente du projet) : ${tool}`);
+    return;
+  }
   if (await db.getSetting<boolean>("unattended", false)) {
     const project = await db.getProject(run.list_id);
     // Liste vide : liste par défaut (git en local, lecture, npm test/run, node…).
@@ -686,7 +847,8 @@ export async function decide(permissionId: string, allow: boolean) {
   });
   await log(p.runId, "permission", ok ? `${allow ? "autorisé" : "refusé"} : ${p.tool}` : "décision arrivée trop tard");
   const stillWaiting = [...permissions.values()].some((x) => x.runId === p.runId);
-  if (!stillWaiting) {
+  // Le run a pu changer d'état entre-temps (arrêté, bloqué) : on ne le repasse « en cours » que s'il attendait.
+  if (!stillWaiting && (await db.getRun(p.runId))?.state === "waiting_permission") {
     await setState(p.runId, "running");
     // La tâche n'est repassée « En cours » que si elle avait été marquée « Bloqué ».
     if (Date.now() - p.at >= BLOCKED_AFTER_MS) {

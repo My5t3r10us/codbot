@@ -2,24 +2,11 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Codbot</title>
-    <script type="module" src="/src/main.ts" defer></script>
   </head>
-
   <body>
-    <header>
-      <b class="brand">Codbot</b>
-      <nav>
-        <button data-view="tasks">Tâches</button>
-        <button data-view="runs">Runs <span id="active-count" class="count"></span></button>
-        <button data-view="queue">File <span id="queue-count" class="count"></span></button>
-        <button data-view="settings">Réglages</button>
-      </nav>
-      <span id="usage" class="usage"></span>
-    </header>
-    <div id="suggestions"></div>
-    <main id="view"></main>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

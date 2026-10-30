@@ -56,8 +56,16 @@ export async function add(tasks: cu.CuTask[], project: db.Project, opts: runs.La
   void tick();
 }
 
+/** Retire un élément ; faux s'il avait déjà quitté la file (lancé par la boucle, par exemple). */
 export async function remove(id: string) {
-  await db.dequeue(id);
+  const removed = await db.dequeue(id);
+  changed();
+  return removed;
+}
+
+/** Remet à sa place un élément dont le lancement a échoué avant de créer le run. */
+export async function requeue(item: db.QueueItem) {
+  await db.enqueue(item);
   changed();
 }
 
@@ -126,27 +134,44 @@ async function step() {
   let free = (await db.getSetting<number>("concurrency", 2)) - active.length;
 
   // 1. Reprendre d'abord les runs de la file mis en pause (limite d'usage, redémarrage de l'app).
+  // Ils comptent ensuite dans la règle git par repo, comme les runs déjà actifs.
+  const started = [...active];
   for (const run of all.filter((r) => r.state === "paused" && r.queue_session === st.sessionId)) {
     if (free <= 0) break;
-    await runs.resumeRun(run.id);
-    free--;
+    try {
+      await runs.resumeRun(run.id);
+      started.push(run);
+      free--;
+    } catch (e) {
+      console.warn(`file : reprise du run ${run.id} impossible`, e);
+    }
   }
 
   // 2. Lancer les éléments suivants, dans l'ordre, en respectant les règles git par repo.
-  const started = [...active];
+  // Un élément en erreur (tâche supprimée, ClickUp injoignable) est sauté : il ne bloque pas les suivants.
   for (const item of await db.listQueue()) {
     if (free <= 0) break;
-    const project = await db.getProject(item.list_id);
-    if (!project?.repo_path) continue;
-    if (!repoAllows(item.strategy, project.repo_path, started)) continue;
-    // Une tâche prise par un autre PC reste dans la file : elle sera relancée quand le verrou tombera.
-    const tasks = await Promise.all(item.task_ids.map((id) => cu.getTask(id)));
-    if ((await Promise.all(tasks.map((t) => lock.lockedByOther(t)))).some(Boolean)) continue;
-    await db.dequeue(item.id);
-    changed();
-    await runs.launchQueued(item, project, st.sessionId);
-    started.push({ repo_path: project.repo_path, git_strategy: item.strategy } as db.Run);
-    free--;
+    try {
+      const project = await db.getProject(item.list_id);
+      if (!project?.repo_path) continue;
+      if (!repoAllows(item.strategy, project.repo_path, started)) continue;
+      // Une tâche prise par un autre PC reste dans la file : elle sera relancée quand le verrou tombera.
+      const tasks = await Promise.all(item.task_ids.map((id) => cu.getTask(id)));
+      if ((await Promise.all(tasks.map((t) => lock.lockedByOther(t)))).some(Boolean)) continue;
+      // Lancé entre-temps depuis la page Agents : rien à faire.
+      if (!(await db.dequeue(item.id))) continue;
+      changed();
+      try {
+        await runs.launchQueued(item, project, st.sessionId);
+      } catch (e) {
+        await requeue(item);
+        throw e;
+      }
+      started.push({ repo_path: project.repo_path, git_strategy: item.strategy } as db.Run);
+      free--;
+    } catch (e) {
+      console.warn(`file : « ${item.task_names.join(", ")} » non lancée`, e);
+    }
   }
 
   // 3. File vide et plus aucun run de la session en cours de travail : fin de session.

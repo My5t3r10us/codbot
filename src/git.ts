@@ -135,3 +135,81 @@ export async function runVerify(path: string, command: string) {
   const out = await Command.create("cmd", ["/d", "/s", "/c", command], { cwd: path }).execute();
   return { ok: out.code === 0, output: (out.stdout + out.stderr).trim().slice(-2000) };
 }
+
+// ---------- vue Git : historique, worktrees, différences ----------
+
+export type GraphCommit = { sha: string; parents: string[]; refs: string[]; subject: string; author: string; at: number };
+
+/** Historique de la branche principale et des branches `cu/*` (plus quelques révisions en extra). */
+export async function graphLog(repo: string, base: string, extra: string[] = [], max = 80): Promise<GraphCommit[]> {
+  const log = (revs: string[]) => git(repo, "log", "--date-order", `-n${max}`, "--format=%H%x1f%P%x1f%D%x1f%s%x1f%an%x1f%at", ...revs, "--");
+  // Sans remote (ou avant le premier fetch), origin/<base> n'existe pas : on s'en passe.
+  const out = await log([`origin/${base}`, base, "--branches=cu/*", ...extra]).catch(() => log([base, "--branches=cu/*", ...extra]));
+  if (!out) return [];
+  return out.split(/\r?\n/).map((line) => {
+    const [sha, parents, refs, subject, author, at] = line.split("\x1f");
+    return {
+      sha,
+      parents: parents ? parents.split(" ") : [],
+      refs: refs ? refs.split(", ").map((r) => r.replace(/^HEAD -> /, "")).filter((r) => r && r !== "HEAD") : [],
+      subject,
+      author,
+      at: Number(at) * 1000,
+    };
+  });
+}
+
+export type Worktree = { path: string; head: string; branch: string | null };
+
+export async function worktreeList(repo: string): Promise<Worktree[]> {
+  const out = await git(repo, "worktree", "list", "--porcelain");
+  const list: Worktree[] = [];
+  let cur: Partial<Worktree> = {};
+  for (const line of [...out.split(/\r?\n/), ""]) {
+    if (!line) {
+      if (cur.path) list.push({ path: cur.path, head: cur.head ?? "", branch: cur.branch ?? null });
+      cur = {};
+      continue;
+    }
+    if (line.startsWith("worktree ")) cur.path = line.slice(9);
+    else if (line.startsWith("HEAD ")) cur.head = line.slice(5);
+    else if (line.startsWith("branch ")) cur.branch = line.slice(7).replace(/^refs\/heads\//, "");
+  }
+  return list;
+}
+
+/** Commits d'avance et de retard d'un worktree par rapport à `origin/<base>`. */
+export async function aheadBehind(path: string, base: string) {
+  const out = await git(path, "rev-list", "--left-right", "--count", `origin/${base}...HEAD`).catch(() => "0\t0");
+  const [behind, ahead] = out.split(/\s+/).map(Number);
+  return { ahead: ahead || 0, behind: behind || 0 };
+}
+
+export async function changedFiles(path: string) {
+  const out = await git(path, "status", "--porcelain");
+  return out ? out.split(/\r?\n/).length : 0;
+}
+
+export type FileStat = { path: string; add: number; del: number; untracked?: boolean };
+
+/** Fichiers modifiés depuis `base` (commits et modifications non commitées). */
+export async function diffStat(path: string, base: string): Promise<FileStat[]> {
+  const out = await git(path, "diff", "--numstat", base);
+  const files: FileStat[] = out
+    ? out.split(/\r?\n/).map((l) => {
+        const [add, del, ...rest] = l.split("\t");
+        return { path: rest.join("\t"), add: Number(add) || 0, del: Number(del) || 0 };
+      })
+    : [];
+  const untracked = await git(path, "ls-files", "--others", "--exclude-standard");
+  for (const f of untracked ? untracked.split(/\r?\n/) : []) files.push({ path: f, add: 0, del: 0, untracked: true });
+  return files;
+}
+
+export async function diffFile(path: string, base: string, file: string) {
+  return git(path, "diff", base, "--", file);
+}
+
+export async function fetchOrigin(repo: string) {
+  await git(repo, "fetch", "origin", "--prune");
+}

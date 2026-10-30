@@ -1,0 +1,210 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, Consolas, monospace;
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-fg: var(--brand-fg);
+  --color-ok: var(--ok);
+  --color-ok-fg: var(--ok-fg);
+  --color-warn: var(--warn);
+  --color-warn-fg: var(--warn-fg);
+  --color-err: var(--err);
+  --color-err-fg: var(--err-fg);
+  --color-rev: var(--rev);
+  --color-rev-fg: var(--rev-fg);
+  --color-code: var(--code);
+  --color-line-tree: var(--line-tree);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+}
+
+:root {
+  --background: #fafafa;
+  --card: #ffffff;
+  --foreground: #09090b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --faint: #a1a1aa;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --brand: #2563eb;
+  --brand-fg: #2563eb;
+  --ok: #16a34a;
+  --ok-fg: #15803d;
+  --warn: #d97706;
+  --warn-fg: #b45309;
+  --err: #dc2626;
+  --err-fg: #b91c1c;
+  --rev: #7c3aed;
+  --rev-fg: #6d28d9;
+  --code: #fafafa;
+  --line-tree: color-mix(in oklab, var(--brand) 45%, var(--border));
+  color-scheme: light;
+}
+
+.dark {
+  --background: #09090b;
+  --card: #18181b;
+  --foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --faint: #52525b;
+  --primary: #fafafa;
+  --primary-foreground: #18181b;
+  --brand-fg: color-mix(in oklab, var(--brand) 70%, white);
+  --ok-fg: #4ade80;
+  --warn-fg: #fbbf24;
+  --err-fg: #f87171;
+  --rev-fg: #c4b5fd;
+  --code: #111113;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+* {
+  border-color: var(--border);
+}
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* ---------- petits éléments animés partagés ---------- */
+
+.ldot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+.ldot.pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: currentColor;
+  animation: cb-ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, var(--muted-foreground) 0%, var(--muted-foreground) 40%, var(--foreground) 50%, var(--muted-foreground) 60%, var(--muted-foreground) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: cb-shimmer 2.2s linear infinite;
+}
+
+.bot {
+  display: grid;
+  grid-auto-flow: column;
+  place-content: center;
+  flex: none;
+  background: var(--primary);
+  border-radius: 30%;
+}
+.bot i {
+  display: block;
+  border-radius: 2px;
+  background: var(--primary-foreground);
+  width: calc(var(--s) * 0.12);
+  height: calc(var(--s) * 0.3);
+}
+.bot { width: var(--s); height: var(--s); gap: calc(var(--s) * 0.12); }
+.bot.run i { animation: cb-look 3s ease-in-out infinite; }
+.bot.wait { animation: cb-hop 1.2s ease-in-out infinite; }
+.bot.wait i { height: calc(var(--s) * 0.17); width: calc(var(--s) * 0.17); border-radius: 50%; }
+.bot.sleep i, .bot.err i { height: 2px; margin-top: 3px; }
+.bot.brand { background: var(--brand); }
+.bot.brand i { background: #fff; }
+.mark i { animation: cb-blink 6s infinite; }
+
+.blur-in { animation: cb-blur-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.fade-up { animation: cb-fade-up 0.35s both; }
+.pop-in { animation: cb-pop 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
+.fresh { animation: cb-fresh 1.6s ease-out both; }
+.spin { animation: cb-rot 0.8s linear infinite; }
+
+.bg-grid::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.45;
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 10%, transparent 70%);
+  animation: cb-drift 30s linear infinite;
+}
+
+@keyframes cb-ping { 0% { transform: scale(1); opacity: 0.6; } 80%, 100% { transform: scale(2.8); opacity: 0; } }
+@keyframes cb-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes cb-look { 0%, 40% { transform: translateX(0); } 50%, 70% { transform: translateX(-1.5px); } 80%, 100% { transform: translateX(1.5px); } }
+@keyframes cb-hop { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes cb-blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(0.15); } }
+@keyframes cb-blur-in { from { opacity: 0; filter: blur(6px); transform: translateY(6px); } to { opacity: 1; filter: none; transform: none; } }
+@keyframes cb-fade-up { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes cb-pop { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes cb-fresh { from { background: color-mix(in oklab, var(--brand) 14%, transparent); } to { background: transparent; } }
+@keyframes cb-rot { to { transform: rotate(360deg); } }
+@keyframes cb-drift { from { background-position: 0 0; } to { background-position: 32px 32px; } }
+@keyframes cb-sheet-in { from { opacity: 0.5; transform: translateX(40px); } to { opacity: 1; transform: none; } }
+@keyframes cb-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cb-flow { from { background-position: 200% 0; } to { background-position: 0 0; } }
+@keyframes cb-scan { from { background-position: -60% 0; } to { background-position: 160% 0; } }
+
+.anim-sheet { animation: cb-sheet-in 0.4s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
+.anim-fade { animation: cb-fade 0.2s both; }
+.bar-live {
+  background-image: linear-gradient(90deg, var(--brand), color-mix(in oklab, var(--brand) 25%, transparent), var(--brand));
+  background-size: 200% 100%;
+  animation: cb-flow 1.2s linear infinite;
+}
+.scan-live {
+  background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  background-size: 60% 100%;
+  background-repeat: no-repeat;
+  animation: cb-scan 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

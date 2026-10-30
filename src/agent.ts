@@ -15,6 +15,10 @@ export type AgentCallbacks = {
   /** Usage de l'abonnement, envoyé par le CLI à chaque requête. */
   onUsage(usage: Usage): void;
   onExit(code: number | null): void;
+  /** Appel d'outil de l'agent (ou d'un sous-agent si `parentId` est renseigné). */
+  onToolUse?(tool: { id: string; name: string; input: Json; parentId: string | null }): void;
+  /** Résultat d'un appel d'outil. */
+  onToolResult?(result: { toolUseId: string; isError: boolean }): void;
 };
 
 const brief = (v: unknown, n = 300) => {
@@ -25,6 +29,8 @@ const brief = (v: unknown, n = 300) => {
 export class AgentSession {
   private child: Child | null = null;
   private buffer = "";
+  /** Arrêt demandé par Codbot : la fin du processus n'est pas une sortie inattendue. */
+  private stopping = false;
 
   constructor(
     private runId: string,
@@ -58,7 +64,9 @@ export class AgentSession {
     cmd.on("error", (err) => this.cb.onLog("error", `processus claude : ${err}`));
     cmd.on("close", ({ code }) => {
       this.child = null;
-      this.cb.onExit(code);
+      // Sinon onExit, arrivé après coup, écraserait l'état posé par l'appelant (pause, bloqué…)
+      // ou retirerait la session suivante du même run.
+      if (!this.stopping) this.cb.onExit(code);
     });
     this.child = await cmd.spawn();
     await this.send(prompt);
@@ -74,6 +82,7 @@ export class AgentSession {
   async stop() {
     const c = this.child;
     this.child = null;
+    this.stopping = true;
     await c?.kill();
   }
 
@@ -106,15 +115,24 @@ export class AgentSession {
     if (limit) this.cb.onRateLimit(limit);
     if (msg.type === "rate_limit_event" || (limit && msg.type !== "result")) return;
     switch (msg.type) {
-      case "assistant":
+      case "assistant": {
+        const parentId = msg.parent_tool_use_id ? String(msg.parent_tool_use_id) : null;
         for (const part of msg.message?.content ?? []) {
-          if (part.type === "text") this.cb.onLog("agent", part.text);
-          if (part.type === "tool_use") this.cb.onLog("tool", `${part.name} ${brief(part.input, 200)}`);
+          // Les messages d'un sous-agent restent visibles dans le journal mais marqués comme tels.
+          if (part.type === "text" && !parentId) this.cb.onLog("agent", part.text);
+          if (part.type === "tool_use") {
+            this.cb.onLog(parentId ? "subtool" : "tool", `${part.name} ${brief(part.input, 200)}`);
+            this.cb.onToolUse?.({ id: String(part.id ?? ""), name: String(part.name ?? ""), input: part.input ?? {}, parentId });
+          }
         }
         return;
+      }
       case "user":
         for (const part of msg.message?.content ?? []) {
-          if (part.type === "tool_result" && part.is_error) this.cb.onLog("tool_error", brief(part.content));
+          if (part.type === "tool_result") {
+            if (part.is_error) this.cb.onLog("tool_error", brief(part.content));
+            this.cb.onToolResult?.({ toolUseId: String(part.tool_use_id ?? ""), isError: Boolean(part.is_error) });
+          }
         }
         return;
       case "result": {

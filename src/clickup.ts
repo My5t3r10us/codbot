@@ -6,7 +6,7 @@ const API = "https://api.clickup.com/api/v2";
 export const TOKEN_KEY = "clickup-token";
 
 export type CuStatus = { status: string; color: string; type: string; orderindex: number };
-export type CuUser = { id: number; username: string; email: string };
+export type CuUser = { id: number; username: string; email: string; color?: string | null; initials?: string | null };
 export type CuTask = {
   id: string;
   custom_id: string | null;
@@ -24,6 +24,8 @@ export type CuTask = {
   subtasks?: CuTask[];
   checklists?: { name: string; items: { name: string; resolved: boolean }[] }[];
   due_date: string | null;
+  /** Priorité ClickUp : urgent, high, normal, low (ou null). */
+  priority?: { priority: string; color: string } | null;
 };
 
 let cachedToken: string | null = null;

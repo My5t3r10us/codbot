@@ -228,19 +228,22 @@ export async function listQueue() {
   return (await (await conn()).select<QueueRow[]>("SELECT * FROM queue ORDER BY position")).map(toItem);
 }
 
-export async function enqueue(item: Omit<QueueItem, "position" | "added_at">) {
+/** Ajoute en fin de file, ou à `position` pour remettre un élément à sa place. */
+export async function enqueue(item: Omit<QueueItem, "position" | "added_at"> & { position?: number }) {
   const c = await conn();
   const [{ next }] = await c.select<{ next: number }[]>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM queue");
   await c.execute(
     `INSERT INTO queue (id, position, list_id, task_ids, task_names, mode, strategy, brief, status_mode, added_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [item.id, next, item.list_id, JSON.stringify(item.task_ids), JSON.stringify(item.task_names), item.mode, item.strategy,
+    [item.id, item.position ?? next, item.list_id, JSON.stringify(item.task_ids), JSON.stringify(item.task_names), item.mode, item.strategy,
       item.brief, item.status_mode, new Date().toISOString()],
   );
 }
 
+/** Retire un élément de la file. Faux s'il n'y était plus (déjà lancé ailleurs) : sert de prise exclusive. */
 export async function dequeue(id: string) {
-  await (await conn()).execute("DELETE FROM queue WHERE id = $1", [id]);
+  const r = await (await conn()).execute("DELETE FROM queue WHERE id = $1", [id]);
+  return r.rowsAffected > 0;
 }
 
 /** Réécrit les positions dans l'ordre donné. */
@@ -279,5 +282,41 @@ export async function getQueueSession(id: string) {
 export async function listAllMappings() {
   return (await conn()).select<{ list_id: string; event: StatusEvent; status: string }[]>(
     "SELECT list_id, event, status FROM status_mappings ORDER BY list_id, event",
+  );
+}
+
+/** Derniers événements de tous les runs (fil d'activité de la page Projets). */
+export async function listRecentEvents(limit = 40, types: string[] = ["git", "status", "permission", "error", "steer"]) {
+  const marks = types.map((_, i) => `$${i + 2}`).join(", ");
+  return (await conn()).select<RunEvent[]>(
+    `SELECT * FROM run_events WHERE type IN (${marks}) ORDER BY id DESC LIMIT $1`,
+    [limit, ...types],
+  );
+}
+
+/** Dernier événement de chaque run parmi les types donnés (activité affichée sur les cartes). */
+export async function latestEvents(runIds: string[], types = ["tool", "agent", "todos", "permission", "git"]) {
+  if (!runIds.length) return [] as RunEvent[];
+  const ids = runIds.map((_, i) => `$${i + 1}`).join(", ");
+  const kinds = types.map((_, i) => `$${runIds.length + i + 1}`).join(", ");
+  return (await conn()).select<RunEvent[]>(
+    `SELECT e.* FROM run_events e JOIN (SELECT run_id, MAX(id) AS id FROM run_events WHERE run_id IN (${ids}) AND type IN (${kinds}) GROUP BY run_id) m ON m.id = e.id`,
+    [...runIds, ...types],
+  );
+}
+
+/** Dernier plan (événement « todos ») de chaque run. */
+export async function latestPlans(runIds: string[]) {
+  return latestEvents(runIds, ["todos"]);
+}
+
+/** Événements de certains types pour plusieurs runs, dans l'ordre (arbre des agents). */
+export async function eventsOfRuns(runIds: string[], types: string[]) {
+  if (!runIds.length) return [] as RunEvent[];
+  const ids = runIds.map((_, i) => `$${i + 1}`).join(", ");
+  const kinds = types.map((_, i) => `$${runIds.length + i + 1}`).join(", ");
+  return (await conn()).select<RunEvent[]>(
+    `SELECT * FROM run_events WHERE run_id IN (${ids}) AND type IN (${kinds}) ORDER BY id`,
+    [...runIds, ...types],
   );
 }
