@@ -1,6 +1,6 @@
 [package]
 name = "codbot"
-version = "0.3.0"
+version = "0.3.1"
 description = "Codbot : taches ClickUp et agents Claude Code"
 authors = ["b.moine"]
 edition = "2024"
@@ -24,8 +24,6 @@ tauri-plugin-http = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny_http = "0.12"

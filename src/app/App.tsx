@@ -6,7 +6,6 @@ import { ProjectsPage } from "../pages/ProjectsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { TasksPage } from "../pages/TasksPage";
 import * as runs from "../runs";
-import { checkForUpdate, type UpdateInfo } from "../updater";
 import { Toaster } from "../ui/toast";
 import { NavContext, type Page } from "./nav";
 import { Suggestions } from "./Suggestions";
@@ -19,7 +18,6 @@ export function App() {
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [decisionFor, setDecisionFor] = useState<string | null | undefined>(undefined);
   const [checks, setChecks] = useState<Check[] | null>(null);
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
   // Premier écran : Tâches si un projet est prêt, sinon Réglages.
   useEffect(() => {
@@ -37,7 +35,6 @@ export function App() {
 
   useEffect(() => {
     void runChecks().then(setChecks).catch(() => {});
-    void checkForUpdate().then(setUpdate).catch(() => {});
   }, []);
 
   // Cliquer une notification ramène Codbot au premier plan : on ouvre le run concerné.
@@ -56,7 +53,7 @@ export function App() {
     <Toaster>
       <NavContext.Provider value={nav}>
         <div className="flex h-full flex-col overflow-hidden">
-          <TopBar settingsAlert={bad.length ? bad.map((c) => `${c.name} : ${c.detail}`).join("\n") : update?.available ? `Version ${update.available.version} disponible` : null} />
+          <TopBar settingsAlert={bad.length ? bad.map((c) => `${c.name} : ${c.detail}`).join("\n") : null} />
           <Suggestions />
           <main className="relative min-h-0 flex-1">
             {page === "projects" && <ProjectsPage />}
@@ -69,7 +66,7 @@ export function App() {
                 onDecisionClose={() => setDecisionFor(undefined)}
               />
             )}
-            {page === "settings" && <SettingsPage checks={checks} onRecheck={() => void runChecks().then(setChecks)} update={update} />}
+            {page === "settings" && <SettingsPage checks={checks} onRecheck={() => void runChecks().then(setChecks)} />}
           </main>
         </div>
       </NavContext.Provider>

@@ -1,4 +1,5 @@
 // Réglages : diagnostic, ClickUp, ce PC, agent, file d'attente, projets, partage, mises à jour.
+import { getVersion } from "@tauri-apps/api/app";
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
 import { CircleAlert, CircleCheck, Download, FolderOpen, Plus, RefreshCw, Trash, Upload, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -11,7 +12,6 @@ import * as lock from "../lock";
 import * as mp from "../modelpick";
 import * as runs from "../runs";
 import * as settingsio from "../settingsio";
-import * as updater from "../updater";
 import { ProjectMark } from "../app/ProjectSwitcher";
 import { resetCachedUser, settingsSignal, useAsync, useProjects, useSetting } from "../app/store";
 import { applyTheme, type ThemePref } from "../app/theme";
@@ -31,10 +31,10 @@ const SECTIONS = [
   { id: "queue", label: "File d'attente" },
   { id: "projects", label: "Projets" },
   { id: "share", label: "Partage" },
-  { id: "update", label: "Mises à jour" },
+  { id: "version", label: "Version" },
 ];
 
-export function SettingsPage({ checks, onRecheck, update }: { checks: Check[] | null; onRecheck(): void; update: updater.UpdateInfo | null }) {
+export function SettingsPage({ checks, onRecheck }: { checks: Check[] | null; onRecheck(): void }) {
   const [active, setActive] = useState("diag");
   useEffect(() => {
     const box = document.getElementById("settings-scroll");
@@ -59,7 +59,6 @@ export function SettingsPage({ checks, onRecheck, update }: { checks: Check[] | 
           >
             {s.label}
             {s.id === "diag" && checks?.some((c) => !c.ok) && <span className="ml-auto size-1.5 rounded-full bg-err" />}
-            {s.id === "update" && update?.available && <span className="ml-auto size-1.5 rounded-full bg-brand" />}
           </a>
         ))}
       </nav>
@@ -73,7 +72,7 @@ export function SettingsPage({ checks, onRecheck, update }: { checks: Check[] | 
           <QueueSettings />
           <Projects />
           <Share />
-          <Update initial={update} />
+          <Version />
         </div>
       </div>
     </div>
@@ -556,35 +555,12 @@ function Share() {
   );
 }
 
-function Update({ initial }: { initial: updater.UpdateInfo | null }) {
-  const [info, setInfo] = useState<updater.UpdateInfo | null>(initial);
-  const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<string | null>(null);
-  useEffect(() => setInfo(initial), [initial]);
-  async function check() {
-    setError(null);
-    try { setInfo(await updater.checkForUpdate()); } catch (e) { setError(`Vérification impossible : ${(e as Error).message ?? e}`); }
-  }
-  const up = info?.available;
+function Version() {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => void getVersion().then(setVersion), []);
   return (
-    <Card id="update" title="Version et mises à jour" description="Publiées dans les releases GitHub de Codbot et signées : une version non signée est refusée." action={<Button variant="outline" size="sm" onClick={() => void check()}><RefreshCw />Vérifier</Button>}>
-      {error ? <Status ok={false}>{error}</Status>
-        : !info ? <Status ok={null}>Vérification…</Status>
-        : !up ? <Status ok>Version {info.current} : à jour.</Status>
-        : (
-          <div className="grid gap-3">
-            <Status ok={null}>Version {info.current} installée, <b className="text-foreground">{up.version}</b> disponible.</Status>
-            {up.body && <p className="rounded-lg bg-muted/60 px-3 py-2 text-[12.5px] whitespace-pre-wrap">{up.body}</p>}
-            <Button variant="brand" className="justify-self-start" disabled={progress !== null}
-              onClick={() => {
-                setProgress("…");
-                void updater.installAndRelaunch(up, (pct) => setProgress(pct === null ? "…" : `${pct} %`))
-                  .catch((e) => { setProgress(null); setError(`Installation impossible : ${(e as Error).message ?? e}`); });
-              }}>
-              <Download />{progress !== null ? `Téléchargement ${progress}` : "Installer et redémarrer"}
-            </Button>
-          </div>
-        )}
+    <Card id="version" title="Version" description="Mise à jour : installer à la main l'installeur d'un build local (npm run tauri build).">
+      <Status ok={null}>{version ? `Version ${version} installée.` : "…"}</Status>
     </Card>
   );
 }

@@ -207,7 +207,7 @@ la file.
 - [Tauri v2](https://tauri.app/). Le cœur Rust se limite à ce qu'aucun plugin ne couvre : serveur
   local des hooks, trousseau Windows, anti-veille, ouverture du terminal.
 - TypeScript pour la logique métier (ClickUp, orchestration des sessions `claude`, git, file),
-  avec les plugins officiels `shell`, `http`, `sql`, `notification`, `updater` et `single-instance`.
+  avec les plugins officiels `shell`, `http`, `sql`, `notification` et `single-instance`.
 - React 19, Vite et Tailwind CSS pour l'interface.
 - SQLite (via `tauri-plugin-sql`) pour les runs, la file et les réglages, avec des migrations
   versionnées.
@@ -258,21 +258,12 @@ npm run tauri build
 L'installeur est produit dans
 `src-tauri\target\release\bundle\nsis\Codbot_<version>_x64-setup.exe`.
 
-### Publier une version
+### Nouvelle version
 
-1. Incrémente `version` dans `src-tauri/tauri.conf.json`.
-2. Lance le script de release avec la clé de signature de l'updater dans l'environnement
-   (`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) et `gh` connecté. Pour le
-   mainteneur, la clé vient d'Infisical :
+1. Incrémente `version` dans `package.json`, `src-tauri/tauri.conf.json` et `src-tauri/Cargo.toml`.
+2. Construis l'installeur avec `npm run tauri build`, puis lance-le : il remplace la version installée.
 
-   ```bash
-   infisical run --env=dev -- npm run release -- --notes "Ce qui change"
-   ```
-
-Le script construit l'installeur signé, écrit `latest.json` et crée la release `v<version>`.
-`--skip-build` republie les fichiers déjà construits. L'app lit
-`https://github.com/My5t3r10us/codbot/releases/latest/download/latest.json` et vérifie le paquet
-avec la clé publique de `tauri.conf.json`.
+Codbot n'a pas de mise à jour automatique.
 
 ## Documentation
 

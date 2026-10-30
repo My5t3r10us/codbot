@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Codbot",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "identifier": "com.cbm.codbot",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -47,18 +47,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "createUpdaterArtifacts": true
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUxRDJEOEE5MzI2NUEwODYKUldTR29HVXlxZGpTNGI1S0c0ZERnYjJJWDZva3RXZ25XOFkwOU1KOUJzc3RxOGlwa0h4MHBHZnQK",
-      "endpoints": [
-        "https://github.com/My5t3r10us/codbot/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
-    }
+    ]
   }
 }
