@@ -2,6 +2,7 @@
 // et synchronisation des statuts ClickUp tâche par tâche.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Command } from "@tauri-apps/plugin-shell";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { AgentSession } from "./agent";
 import { DEFAULT_ALLOWLIST, decideUnattended } from "./allowlist";
@@ -13,6 +14,7 @@ import * as git from "./git";
 import * as lock from "./lock";
 import { SUBAGENT_TOOLS, allowPatternFor, planFromEvents, todosFromToolUse } from "./live";
 import type { Subagent, Todo } from "./live";
+import * as mp from "./modelpick";
 import { redact } from "./redact";
 import { ACTIVE_STATES, buildBrief, coveredTasks, fillBrief, strategyRule } from "./rules";
 import type { StrategyChoice, Usage } from "./rules";
@@ -180,7 +182,36 @@ export async function strategyFor(tasks: cu.CuTask[], project: Project, mode: Ru
 
 // ---------- lancement ----------
 
-export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: string; statusMode?: db.StatusMode };
+/** `model` : choix forcé au lancement ; absent, il est déterminé par la politique des réglages. */
+export type LaunchOptions = { mode: RunMode; strategy: GitStrategy; brief?: string; statusMode?: db.StatusMode; model?: mp.Choice };
+
+// ---------- choix du modèle ----------
+
+export async function modelPolicy() {
+  return mp.normalizePolicy(await db.getSetting<unknown>("model_policy", null), await db.getSetting<string>("model", ""));
+}
+
+/** Classement par un appel court à Haiku ; null en cas d'échec (le choix retombe sur les règles). */
+async function aiTriage(tasks: cu.CuTask[]) {
+  try {
+    const cmd = Command.create("claude", [
+      "-p", mp.triagePrompt(tasks).slice(0, 12_000),
+      "--model", "haiku", "--effort", "low", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+    ]);
+    const timeout = new Promise<null>((r) => setTimeout(() => r(null), 90_000));
+    const out = await Promise.race([cmd.execute(), timeout]);
+    return out && out.code === 0 ? mp.parseTriage(out.stdout) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Modèle et effort pour ces tâches selon les réglages (null : défaut de Claude Code). */
+export async function chooseModel(tasks: cu.CuTask[], opts: { ai?: boolean } = {}) {
+  const policy = await modelPolicy();
+  const triaged = policy.mode === "auto" && policy.triage === "ai" && opts.ai !== false ? await aiTriage(tasks) : null;
+  return mp.pickFor(tasks, policy, triaged ?? undefined);
+}
 
 /** Lance un ou plusieurs runs selon le mode. Renvoie les identifiants créés. */
 export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchOptions) {
@@ -191,7 +222,7 @@ export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchO
   const groups = opts.mode === "groupe" ? [tasks] : tasks.map((t) => [t]);
   const ids: string[] = [];
   for (const group of groups) {
-    ids.push(await launchOne(group, project, opts.mode, strategy, groups.length === 1 ? opts.brief : undefined, null, opts.statusMode ?? null));
+    ids.push(await launchOne(group, project, opts.mode, strategy, groups.length === 1 ? opts.brief : undefined, null, opts.statusMode ?? null, opts.model ?? null));
   }
   return ids;
 }
@@ -199,7 +230,7 @@ export async function launch(tasks: cu.CuTask[], project: Project, opts: LaunchO
 /** Lance un élément de la file (la règle de stratégie a été vérifiée par la file). */
 export async function launchQueued(item: db.QueueItem, project: Project, queueSession: string) {
   const tasks = await Promise.all(item.task_ids.map((id) => cu.getTask(id)));
-  return launchOne(tasks, project, item.mode, item.strategy, item.brief ?? undefined, queueSession, item.status_mode);
+  return launchOne(tasks, project, item.mode, item.strategy, item.brief ?? undefined, queueSession, item.status_mode, item.model_choice as mp.Choice | null);
 }
 
 async function launchOne(
@@ -210,6 +241,7 @@ async function launchOne(
   briefOverride?: string,
   queueSession: string | null = null,
   statusMode: db.StatusMode | null = null,
+  forcedModel: mp.Choice | null = null,
 ) {
   // Tâches relues à jour : verrou d'un autre PC, statut d'origine et brief.
   const fresh = await Promise.all(tasks.map((t) => cu.getTask(t.id)));
@@ -218,6 +250,7 @@ async function launchOne(
     if (other) throw new Error(`« ${t.name} » est déjà prise par un autre PC (tag ${other}).`);
   }
   tasks = fresh;
+  const picked = forcedModel ? { ...forcedModel, reason: "choisi au lancement" } : await chooseModel(tasks);
   // En mode groupé, la branche porte le nom de la tâche parente si elle fait partie du lot.
   const ids = new Set(tasks.map((t) => t.id));
   const lead = tasks.find((t) => tasks.some((o) => o.parent === t.id)) ?? tasks.find((t) => !t.parent || !ids.has(t.parent)) ?? tasks[0];
@@ -245,8 +278,11 @@ async function launchOne(
     ended_at: null,
     queue_session: queueSession,
     status_mode: statusMode,
+    model: picked?.model ?? null,
+    effort: picked?.effort ?? null,
   };
   await db.insertRun(run);
+  await log(run.id, "model", picked ? `${mp.choiceLabel(picked)} (${picked.reason})` : "modèle par défaut de Claude Code");
   changed();
   for (const t of fresh) {
     await lock.acquire(t).catch((e) => log(run.id, "warn", `verrou ClickUp non posé sur « ${t.name} » : ${(e as Error).message}`));
@@ -271,7 +307,6 @@ async function launchOne(
 }
 
 async function startSession(run: Run, prompt: string, resume = false) {
-  const model = (await db.getSetting<string>("model", "")).trim() || null;
   // Plan connu avant une reprise : la suite des TaskUpdate s'y applique.
   if (!plans.has(run.id)) plans.set(run.id, planFromEvents(await db.listRunEvents(run.id)).map(({ content, status, activeForm }) => ({ content, status, activeForm })));
   const session = new AgentSession(
@@ -293,7 +328,8 @@ async function startSession(run: Run, prompt: string, resume = false) {
       onToolUse: (tool) => void onToolUse(run.id, tool),
       onToolResult: (r) => void onToolResult(run.id, r.toolUseId, r.isError),
     },
-    model,
+    run.model,
+    run.effort,
   );
   sessions.set(run.id, session);
   await setState(run.id, "running");

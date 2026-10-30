@@ -285,6 +285,12 @@ fn migrations() -> Vec<Migration> {
             kind: MigrationKind::Up,
             sql: include_str!("../migrations/005_status_mode.sql"),
         },
+        Migration {
+            version: 6,
+            description: "modele et effort par run",
+            kind: MigrationKind::Up,
+            sql: include_str!("../migrations/006_model.sql"),
+        },
     ]
 }
 

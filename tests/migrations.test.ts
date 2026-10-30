@@ -25,9 +25,9 @@ describe("migrations SQL", () => {
     const db = new DatabaseSync(":memory:");
     for (const f of files) db.exec(readFileSync(join(dir, f), "utf8"));
     expect(columns(db, "runs")).toEqual(expect.arrayContaining([
-      "id", "task_ids", "state", "mode", "branch", "pr_url", "task_progress", "task_initial_status", "queue_session", "status_mode",
+      "id", "task_ids", "state", "mode", "branch", "pr_url", "task_progress", "task_initial_status", "queue_session", "status_mode", "model", "effort",
     ]));
-    expect(columns(db, "queue")).toEqual(expect.arrayContaining(["position", "strategy", "brief", "status_mode"]));
+    expect(columns(db, "queue")).toEqual(expect.arrayContaining(["position", "strategy", "brief", "status_mode", "model_choice"]));
     expect(columns(db, "projects")).toContain("allowlist");
     db.close();
   });

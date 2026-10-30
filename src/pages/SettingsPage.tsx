@@ -8,6 +8,7 @@ import * as db from "../db";
 import type { Check } from "../diag";
 import * as git from "../git";
 import * as lock from "../lock";
+import * as mp from "../modelpick";
 import * as runs from "../runs";
 import * as settingsio from "../settingsio";
 import * as updater from "../updater";
@@ -26,6 +27,7 @@ const SECTIONS = [
   { id: "clickup", label: "ClickUp" },
   { id: "pc", label: "Ce PC" },
   { id: "agent", label: "Agent et statuts" },
+  { id: "models", label: "Modèles" },
   { id: "queue", label: "File d'attente" },
   { id: "projects", label: "Projets" },
   { id: "share", label: "Partage" },
@@ -67,6 +69,7 @@ export function SettingsPage({ checks, onRecheck, update }: { checks: Check[] | 
           <ClickUp />
           <ThisPc />
           <Agent />
+          <Models />
           <QueueSettings />
           <Projects />
           <Share />
@@ -189,16 +192,11 @@ function ThisPc() {
 
 function Agent() {
   const [mode, setMode] = useSetting<db.StatusMode>("status_mode", "auto");
-  const [model, setModel] = useSetting<string>("model", "");
   const [theme, setTheme] = useSetting<ThemePref>("theme", "auto");
-  const [draft, setDraft] = useState<string | null>(null);
   return (
     <Card id="agent" title="Agent et statuts">
       <Row label="Statuts ClickUp" hint={mode === "auto" ? "Codbot change le statut et commente la tâche." : "Codbot propose, tu valides chaque changement."}>
         <Segmented<db.StatusMode> value={mode} onChange={(v) => void setMode(v)} label="Statuts" options={[{ value: "auto", label: "Automatiques" }, { value: "manual", label: "Je valide" }]} />
-      </Row>
-      <Row label="Modèle Claude" hint="Vide : modèle par défaut de Claude Code.">
-        <Input value={draft ?? model} placeholder="ex. opus, sonnet" onChange={(e) => setDraft(e.target.value)} onBlur={() => { if (draft !== null) void setModel(draft.trim()); setDraft(null); }} aria-label="Modèle Claude" />
       </Row>
       <Row label="Apparence">
         <Segmented<ThemePref>
@@ -207,6 +205,131 @@ function Agent() {
           options={[{ value: "auto", label: "Comme Windows" }, { value: "light", label: "Clair" }, { value: "dark", label: "Sombre" }]}
         />
       </Row>
+    </Card>
+  );
+}
+
+const choiceKey = (c: mp.Choice) => `${c.model}:${c.effort}`;
+const parseChoice = (v: string): mp.Choice => {
+  const [model, effort] = v.split(":");
+  return { model: model as mp.ModelId, effort: effort as mp.Effort };
+};
+
+/** Liste des couples modèle · effort autorisés ; une valeur hors autorisations reste affichée, signalée. */
+function ChoiceSelect({ value, allowed, onChange, label }: { value: mp.Choice; allowed: mp.ModelPolicy["allowed"]; onChange(c: mp.Choice): void; label: string }) {
+  const options = mp.MODELS.flatMap((m) => allowed[m.id].map((effort) => ({ model: m.id, effort })));
+  const ok = allowed[value.model].includes(value.effort);
+  const fallback = ok ? null : mp.clamp(value, allowed);
+  return (
+    <select
+      className={cn(selectCls, "h-8 text-[12.5px]", !ok && "border-warn text-warn-fg")} value={choiceKey(value)} aria-label={label}
+      onChange={(e) => onChange(parseChoice(e.target.value))}
+      title={fallback ? `Non autorisé : ${mp.choiceLabel(fallback)} sera utilisé` : undefined}
+    >
+      {!ok && <option value={choiceKey(value)}>{mp.choiceLabel(value)} (non autorisé)</option>}
+      {options.map((o) => <option key={choiceKey(o)} value={choiceKey(o)}>{mp.choiceLabel(o)}</option>)}
+    </select>
+  );
+}
+
+function Models() {
+  const [raw, setRaw] = useSetting<unknown>("model_policy", null);
+  const [legacy] = useSetting<string>("model", "");
+  const policy = mp.normalizePolicy(raw, legacy);
+  const save = (patch: Partial<mp.ModelPolicy>) => void setRaw({ ...policy, ...patch });
+  const toggle = (model: mp.ModelId, effort: mp.Effort) => {
+    const cur = policy.allowed[model];
+    const next = cur.includes(effort) ? cur.filter((e) => e !== effort) : mp.EFFORTS.filter((e) => e === effort || cur.includes(e));
+    save({ allowed: { ...policy.allowed, [model]: next } });
+  };
+  const setCell = (cat: mp.Category, size: mp.Size, c: mp.Choice) =>
+    save({ matrix: { ...policy.matrix, [cat]: { ...policy.matrix[cat], [size]: c } } });
+  const none = mp.MODELS.every((m) => !policy.allowed[m.id].length);
+  const th = "px-2 py-1.5 text-left text-[12px] font-medium text-muted-foreground";
+  return (
+    <Card
+      id="models" title="Modèles et raisonnement"
+      description={<>Chaque run reçoit un modèle et un niveau d'effort. Les tags ClickUp <code className="font-mono">modele:opus</code>, <code className="font-mono">effort:high</code> ou <code className="font-mono">taille:grande</code> forcent le choix pour une tâche.</>}
+    >
+      <Row label="Choix du modèle" hint={policy.mode === "auto" ? "Selon la matrice ci-dessous." : policy.mode === "fixed" ? "Le même pour tous les runs." : "Codbot ne passe ni modèle ni effort."}>
+        <Segmented<mp.ModelPolicy["mode"]>
+          value={policy.mode} onChange={(mode) => save({ mode })} label="Choix du modèle"
+          options={[{ value: "auto", label: "Automatique" }, { value: "fixed", label: "Fixe" }, { value: "default", label: "Défaut Claude Code" }]}
+        />
+      </Row>
+      {policy.mode === "fixed" && (
+        <Row label="Modèle fixe">
+          <ChoiceSelect value={policy.fixed} allowed={policy.allowed} onChange={(fixed) => save({ fixed })} label="Modèle fixe" />
+        </Row>
+      )}
+      {policy.mode === "auto" && (
+        <Row label="Classement des tâches" hint={policy.triage === "ai" ? "Haiku lit la tâche (quelques secondes, repli sur les règles)." : "Mots-clés, tags, longueur et sous-éléments."}>
+          <Segmented<mp.ModelPolicy["triage"]>
+            value={policy.triage} onChange={(triage) => save({ triage })} label="Classement"
+            options={[{ value: "rules", label: "Règles locales" }, { value: "ai", label: "IA (Haiku)" }]}
+          />
+        </Row>
+      )}
+      {policy.mode !== "default" && (
+        <div className="border-t border-border py-3">
+          <div className="text-[13.5px] font-medium">Autorisés</div>
+          <div className="mb-2 text-[12px] text-muted-foreground">Efforts que chaque modèle peut recevoir. Un choix hors liste est ramené au plus proche autorisé.</div>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead><tr><th className={th}>Modèle</th>{mp.EFFORTS.map((e) => <th key={e} className={cn(th, "text-center")}>{mp.EFFORT_LABELS[e]}</th>)}</tr></thead>
+              <tbody>
+                {mp.MODELS.map((m) => (
+                  <tr key={m.id} className="border-t border-border">
+                    <td className="px-2 py-1.5 text-[13px]"><span className="font-medium">{m.label}</span> <span className="text-[12px] text-muted-foreground">{m.hint}</span></td>
+                    {mp.EFFORTS.map((e) => {
+                      const on = policy.allowed[m.id].includes(e);
+                      return (
+                        <td key={e} className="px-1 py-1 text-center">
+                          <button
+                            type="button" aria-pressed={on} aria-label={`${m.label} ${mp.EFFORT_LABELS[e]}`} onClick={() => toggle(m.id, e)}
+                            className={cn("h-7 w-full min-w-12 cursor-pointer rounded-md border text-[12px]", on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:bg-muted")}
+                          >
+                            {on ? "Oui" : "—"}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {none && <div className="mt-2"><Status ok={false}>Aucun modèle autorisé : les runs utiliseront le modèle par défaut de Claude Code.</Status></div>}
+        </div>
+      )}
+      {policy.mode === "auto" && (
+        <div className="border-t border-border pt-3">
+          <div className="flex items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] font-medium">Matrice tâche → modèle</div>
+              <div className="mb-2 text-[12px] text-muted-foreground">Type de tâche × taille estimée. Sert aussi de grille au classement par IA.</div>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => save({ matrix: mp.DEFAULT_MATRIX })}>Réinitialiser</Button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead><tr><th className={th}>Tâche</th>{mp.SIZES.map((s) => <th key={s.id} className={th}>{s.label}</th>)}</tr></thead>
+              <tbody>
+                {mp.CATEGORIES.map((cat) => (
+                  <tr key={cat.id} className="border-t border-border">
+                    <td className="px-2 py-1.5 align-top"><div className="text-[13px] font-medium">{cat.label}</div><div className="text-[11.5px] text-muted-foreground">{cat.hint}</div></td>
+                    {mp.SIZES.map((s) => (
+                      <td key={s.id} className="min-w-[150px] px-1 py-1.5 align-top">
+                        <ChoiceSelect value={policy.matrix[cat.id][s.id]} allowed={policy.allowed} onChange={(c) => setCell(cat.id, s.id, c)} label={`${cat.label}, ${s.label}`} />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

@@ -266,7 +266,7 @@ function Step({ item, last, now, live }: { item: PlanItem; last: boolean; now: n
 
 // ---------- Activité ----------
 
-const FEED = new Set(["agent", "tool", "user", "permission", "git", "status", "error", "steer", "info", "warn", "rate_limit", "tool_error"]);
+const FEED = new Set(["agent", "tool", "user", "permission", "git", "status", "error", "steer", "info", "warn", "rate_limit", "tool_error", "model"]);
 
 function Activity({ events }: { events: db.RunEvent[] }) {
   const feed = events.filter((e) => FEED.has(e.type)).slice(-300);

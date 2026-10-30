@@ -1,6 +1,6 @@
 [package]
 name = "codbot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Codbot : taches ClickUp et agents Claude Code"
 authors = ["b.moine"]
 edition = "2024"

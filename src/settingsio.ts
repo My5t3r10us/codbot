@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as db from "./db";
 
-const COMMON_SETTINGS = ["team_id", "status_mode", "model", "concurrency", "question_timeout_min", "unattended"] as const;
+const COMMON_SETTINGS = ["team_id", "status_mode", "model", "model_policy", "concurrency", "question_timeout_min", "unattended"] as const;
 
 type ExportFile = {
   app: "codbot";

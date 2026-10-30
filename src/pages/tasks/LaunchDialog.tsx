@@ -2,6 +2,7 @@ import { Play, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import * as cu from "../../clickup";
 import * as db from "../../db";
+import * as mp from "../../modelpick";
 import * as queue from "../../queue";
 import * as runs from "../../runs";
 import type { StrategyChoice } from "../../rules";
@@ -25,6 +26,9 @@ export function LaunchDialog({ tasks, project, onClose, onDone }: { tasks: cu.Cu
   const [brief, setBrief] = useState("");
   const [edited, setEdited] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [policy, setPolicy] = useState<mp.ModelPolicy | null>(null);
+  const [suggested, setSuggested] = useState<mp.Pick | null>(null);
+  const [model, setModel] = useState<mp.Choice | null>(null);
   const single = mode === "groupe" || tasks.length === 1;
   const effective = rule?.forced ?? strategy ?? rule?.suggested ?? "branche";
 
@@ -33,6 +37,14 @@ export function LaunchDialog({ tasks, project, onClose, onDone }: { tasks: cu.Cu
     void runs.strategyFor(tasks, project, mode).then((r) => alive && setRule(r));
     return () => void (alive = false);
   }, [tasks, project, mode]);
+
+  useEffect(() => {
+    let alive = true;
+    void runs.modelPolicy().then((p) => alive && setPolicy(p));
+    // Aperçu par les règles locales : le triage IA éventuel n'a lieu qu'au lancement.
+    void runs.chooseModel(single ? tasks : tasks.slice(0, 1), { ai: false }).then((p) => alive && setSuggested(p));
+    return () => void (alive = false);
+  }, [tasks, single]);
 
   useEffect(() => {
     if (!single || edited) return;
@@ -44,7 +56,7 @@ export function LaunchDialog({ tasks, project, onClose, onDone }: { tasks: cu.Cu
     return () => void (alive = false);
   }, [tasks, project, single, effective, edited]);
 
-  const opts = (): runs.LaunchOptions => ({ mode, strategy: effective, statusMode: statusMode ?? globalMode, brief: single && edited ? brief : undefined });
+  const opts = (): runs.LaunchOptions => ({ mode, strategy: effective, statusMode: statusMode ?? globalMode, brief: single && edited ? brief : undefined, model: model ?? undefined });
 
   async function launchNow() {
     setBusy(true);
@@ -118,6 +130,29 @@ export function LaunchDialog({ tasks, project, onClose, onDone }: { tasks: cu.Cu
                 options={[{ value: "auto", label: "Automatiques" }, { value: "manual", label: "Je valide chaque changement" }]}
               />
             </div>
+            {policy && policy.mode !== "default" && (
+              <div className={row}>
+                <span className="pt-1.5 text-[13.5px] font-medium">Modèle</span>
+                <div>
+                  <select
+                    className="h-[34px] w-full rounded-md border border-border bg-card px-2 text-[13.5px] shadow-xs outline-none focus:border-border-strong"
+                    value={model ? `${model.model}:${model.effort}` : "auto"} aria-label="Modèle et effort"
+                    onChange={(e) => {
+                      const [m, eff] = e.target.value.split(":");
+                      setModel(e.target.value === "auto" ? null : { model: m as mp.ModelId, effort: eff as mp.Effort });
+                    }}
+                  >
+                    <option value="auto">{policy.mode === "fixed" ? "Réglage fixe" : "Automatique"}{suggested && single ? ` · ${mp.choiceLabel(suggested)}` : ""}</option>
+                    {mp.MODELS.flatMap((m) => policy.allowed[m.id].map((eff) => (
+                      <option key={`${m.id}:${eff}`} value={`${m.id}:${eff}`}>{mp.choiceLabel({ model: m.id, effort: eff })}</option>
+                    )))}
+                  </select>
+                  <p className="mt-2 text-[12.5px] text-muted-foreground">
+                    {model ? "Choisi à la main pour ce lancement." : !single ? "Choisi pour chaque tâche au lancement." : policy.triage === "ai" && policy.mode === "auto" ? `Aperçu par les règles ; Haiku affinera au lancement. ${suggested?.reason ?? ""}` : suggested?.reason ?? "…"}
+                  </p>
+                </div>
+              </div>
+            )}
             <div className={row}>
               <span className="pt-1.5 text-[13.5px] font-medium">Brief</span>
               {single ? (

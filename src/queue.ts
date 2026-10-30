@@ -50,6 +50,7 @@ export async function add(tasks: cu.CuTask[], project: db.Project, opts: runs.La
       strategy,
       brief: groups.length === 1 ? (opts.brief ?? null) : null,
       status_mode: opts.statusMode ?? null,
+      model_choice: opts.model ?? null,
     });
   }
   changed();

@@ -37,6 +37,7 @@ export class AgentSession {
     private cwd: string,
     private cb: AgentCallbacks,
     private model: string | null,
+    private effort: string | null = null,
   ) {}
 
   get running() {
@@ -56,6 +57,7 @@ export class AgentSession {
       "--permission-prompts", "none",
     ];
     if (this.model) args.push("--model", this.model);
+    if (this.effort) args.push("--effort", this.effort);
     if (resumeSessionId) args.push("--resume", resumeSessionId);
 
     const cmd = Command.create("claude", args, { cwd: this.cwd });
